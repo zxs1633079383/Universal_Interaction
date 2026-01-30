@@ -106,7 +106,7 @@ make build
 ```bash
 # 终端 1: 启动 Moltbot Gateway
 cd /path/to/moltbot
-pnpm moltbot gateway
+pnpm openclaw gateway
 
 # 终端 2: 启动 UIP Gateway
 cd /path/to/Universal_Interaction/uip-gateway

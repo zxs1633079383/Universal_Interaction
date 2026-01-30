@@ -259,7 +259,7 @@ UIP Gateway 使用 Moltbot 的 **universal-im** 插件进行通信。以下是�
 
 ```bash
 # 启用插件
-pnpm moltbot plugins enable universal-im
+pnpm openclaw plugins enable universal-im
 ```
 
 ### 4.2 配置 universal-im 端点
@@ -298,17 +298,17 @@ pnpm moltbot plugins enable universal-im
 
 ```bash
 # 重启 gateway
-pnpm moltbot gateway stop && sleep 2 && pnpm moltbot gateway run
+pnpm openclaw gateway stop && sleep 2 && pnpm openclaw gateway run
 
 # 或使用
-pnpm moltbot gateway restart
+pnpm openclaw gateway restart
 ```
 
 ### 4.4 验证配置
 
 ```bash
 # 查看 channels 状态
-pnpm moltbot channels status
+pnpm openclaw channels status
 
 # 检查 universal-im 健康状态
 curl http://localhost:18789/universal-im/health
@@ -363,9 +363,9 @@ curl -X POST http://localhost:8080/api/v1/local/message \
 
 ```bash
 # 如果文件不存在，可以通过 CLI 设置
-pnpm moltbot config set channels.universal-im.enabled true
-pnpm moltbot config set channels.universal-im.endpoints.uip-gateway.token "uip-gateway-token"
-pnpm moltbot config set channels.universal-im.endpoints.uip-gateway.callbackUrl "http://localhost:8080/api/v1/callback"
+pnpm openclaw config set channels.universal-im.enabled true
+pnpm openclaw config set channels.universal-im.endpoints.uip-gateway.token "uip-gateway-token"
+pnpm openclaw config set channels.universal-im.endpoints.uip-gateway.callbackUrl "http://localhost:8080/api/v1/callback"
 ```
 
 或者直接编辑配置文件：
@@ -392,17 +392,17 @@ pnpm moltbot config set channels.universal-im.endpoints.uip-gateway.callbackUrl 
 
 ```bash
 # 启用 universal-im 插件
-pnpm moltbot plugins enable universal-im
+pnpm openclaw plugins enable universal-im
 
 # 启动 moltbot gateway
-pnpm moltbot gateway run
+pnpm openclaw gateway run
 ```
 
 **5.2.3 验证 Moltbot**
 
 ```bash
 # 查看 channel 状态
-pnpm moltbot channels status
+pnpm openclaw channels status
 
 # 检查 universal-im 健康
 curl http://localhost:18789/universal-im/health
@@ -622,9 +622,9 @@ func (a *MyIMAdapter) Capabilities() *protocol.SurfaceCapabilities {
 
 ### 7.2 Moltbot 检查
 
-- [ ] Moltbot gateway 启动成功 (`pnpm moltbot gateway run`)
+- [ ] Moltbot gateway 启动成功 (`pnpm openclaw gateway run`)
 - [ ] Moltbot 监听 18789 端口
-- [ ] `pnpm moltbot channels status` 显示 universal-im 已启用
+- [ ] `pnpm openclaw channels status` 显示 universal-im 已启用
 - [ ] `curl http://localhost:18789/universal-im/health` 返回 OK
 - [ ] endpoints 中有 "uip-gateway"
 
@@ -671,7 +671,7 @@ curl -X POST http://localhost:8080/api/v1/callback \
 ./bin/uip-gateway -config config.yaml 2>&1 | jq .
 
 # Moltbot 日志
-pnpm moltbot gateway run --verbose
+pnpm openclaw gateway run --verbose
 ```
 
 ---
@@ -756,17 +756,17 @@ observability:
 # setup-moltbot-integration.sh
 
 # 设置 Moltbot universal-im 端点
-pnpm moltbot config set channels.universal-im.enabled true
-pnpm moltbot config set channels.universal-im.endpoints.uip-gateway.token "uip-gateway-token"
-pnpm moltbot config set channels.universal-im.endpoints.uip-gateway.callbackUrl "http://localhost:8080/api/v1/callback"
-pnpm moltbot config set channels.universal-im.endpoints.uip-gateway.enabled true
-pnpm moltbot config set channels.universal-im.endpoints.uip-gateway.dmPolicy "open"
+pnpm openclaw config set channels.universal-im.enabled true
+pnpm openclaw config set channels.universal-im.endpoints.uip-gateway.token "uip-gateway-token"
+pnpm openclaw config set channels.universal-im.endpoints.uip-gateway.callbackUrl "http://localhost:8080/api/v1/callback"
+pnpm openclaw config set channels.universal-im.endpoints.uip-gateway.enabled true
+pnpm openclaw config set channels.universal-im.endpoints.uip-gateway.dmPolicy "open"
 
 # 启用插件
-pnpm moltbot plugins enable universal-im
+pnpm openclaw plugins enable universal-im
 
 # 重启 gateway
-pnpm moltbot gateway restart
+pnpm openclaw gateway restart
 
 echo "Moltbot 配置完成！"
 ```
@@ -830,7 +830,7 @@ kill -9 <PID>
 
 # 2. 重新启动
 cd /path/to/moltbot
-pnpm moltbot gateway
+pnpm openclaw gateway
 ```
 
 ### 10.3 Webhook 端点 404 错误
@@ -892,7 +892,7 @@ tail -50 /tmp/moltbot/moltbot-*.log | grep -E "error|fail|callback"
 2. 确认 AI 是否正常响应:
 ```bash
 # 使用 CLI 直接测试 AI
-pnpm moltbot agent --local -m "你好" --session-id test
+pnpm openclaw agent --local -m "你好" --session-id test
 ```
 
 3. 如果 AI 响应正常但没有回调，检查 `universal-im` 插件配置。

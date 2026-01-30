@@ -106,7 +106,7 @@ Ensure your Moltbot has the `universal-im` plugin configured. Edit `~/.clawdbot/
 ```bash
 # Terminal 1: Start Moltbot Gateway
 cd /path/to/moltbot
-pnpm moltbot gateway
+pnpm openclaw gateway
 
 # Terminal 2: Start UIP Gateway
 cd /path/to/Universal_Interaction/uip-gateway
