@@ -189,7 +189,7 @@ tail -30 /tmp/moltbot/moltbot-$(date +%Y-%m-%d).log | grep -E "\[universal-im\]"
 
 ## 📄 开源协议
 
-MIT License
+Apache License 2.0 - 详见 [LICENSE](LICENSE)
 
 ---
 

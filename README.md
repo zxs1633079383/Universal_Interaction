@@ -194,7 +194,7 @@ tail -f /tmp/moltbot/moltbot-$(date +%Y-%m-%d).log | grep "\[universal-im\]"
 
 ## 📄 License
 
-MIT License
+Apache License 2.0 - See [LICENSE](LICENSE) for details.
 
 ---
 
