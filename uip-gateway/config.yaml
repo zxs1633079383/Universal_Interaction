@@ -1,0 +1,68 @@
+# UIP Gateway Configuration
+# Universal Interaction Protocol Gateway
+
+server:
+  http_port: 8080
+  grpc_port: 9090
+  websocket_path: "/ws"
+  read_timeout: 30s
+  write_timeout: 30s
+  shutdown_timeout: 10s
+
+clawdbot:
+  # Moltbot gateway endpoint (default port 18789)
+  endpoint: "http://localhost:18789"
+  # Request timeout
+  timeout: 30s
+  # Retry policy
+  retry_policy:
+    max_retries: 3
+    backoff: "exponential"
+    initial_interval: 100ms
+    max_interval: 5s
+  # Use insecure connection (for local dev)
+  insecure: true
+  
+  # Moltbot universal-im integration
+  mode: "moltbot"  # "moltbot" (universal-im) or "legacy"
+  
+  # Token for authenticating with moltbot universal-im
+  # This should match the token in moltbot's universal-im endpoint config
+  token: "uip-gateway-token"
+  
+  # Endpoint ID in moltbot config
+  endpoint_id: "uip-gateway"
+  
+  # Our callback URL - moltbot will POST responses here
+  callback_url: "http://localhost:8080/api/v1/callback"
+
+adapters:
+  local:
+    enabled: true
+    # HTTP endpoint for local IM integration
+    http_path: "/api/v1/local"
+  
+  # Future adapters (disabled by default)
+  slack:
+    enabled: false
+    webhook_path: "/api/v1/slack"
+  
+  wechat:
+    enabled: false
+    webhook_path: "/api/v1/wechat"
+
+session:
+  # Session TTL
+  ttl: 24h
+  # Maximum concurrent sessions
+  max_sessions: 10000
+  # Cleanup interval
+  cleanup_interval: 5m
+
+observability:
+  # Enable distributed tracing
+  tracing: true
+  # Metrics endpoint
+  metrics_port: 9091
+  # Log level: debug, info, warn, error
+  log_level: "info"
