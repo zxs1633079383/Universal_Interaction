@@ -57,7 +57,7 @@ func main() {
 	// Create Clawdbot client
 	var clawdbotClient clawdbot.Client
 	var moltbotClient *clawdbot.MoltbotClient
-	
+
 	if *useMock {
 		logger.Info("Using mock Clawdbot client")
 		clawdbotClient = clawdbot.NewMockClient(logger)
@@ -128,7 +128,7 @@ func main() {
 	if cfg.Adapters.Local.Enabled {
 		if adapter, ok := gw.GetAdapter("local"); ok {
 			if localAdapter, ok := adapter.(*local.LocalAdapter); ok {
-				mux.Handle(cfg.Adapters.Local.HTTPPath+"/", 
+				mux.Handle(cfg.Adapters.Local.HTTPPath+"/",
 					http.StripPrefix(cfg.Adapters.Local.HTTPPath, localAdapter.HTTPHandler()))
 				logger.Info("Local adapter HTTP endpoints registered",
 					zap.String("path", cfg.Adapters.Local.HTTPPath))
@@ -142,30 +142,31 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		
+
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			logger.Error("Failed to read callback body", zap.Error(err))
 			http.Error(w, "Bad request", http.StatusBadRequest)
 			return
 		}
-		
+
 		var callback clawdbot.MoltbotCallbackRequest
 		if err := json.Unmarshal(body, &callback); err != nil {
 			logger.Error("Failed to parse callback", zap.Error(err))
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
 			return
 		}
-		
+
 		logger.Info("Received Moltbot callback",
 			zap.String("chatId", callback.ChatID),
-			zap.Int("textLen", len(callback.Text)))
-		
+			zap.Int("textLen", len(callback.Text)),
+			zap.String("text", callback.Text))
+
 		// Forward to Moltbot client if available
 		if moltbotClient != nil {
 			moltbotClient.HandleCallback(&callback)
 		}
-		
+
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"ok": true}`))
 	})
@@ -289,8 +290,8 @@ func printBanner(cfg *config.Config, logger *zap.Logger) {
 ║    GET  /health                    - Health check            ║
 ╚══════════════════════════════════════════════════════════════╝
 `
-	fmt.Printf(banner, 
-		version, 
+	fmt.Printf(banner,
+		version,
 		cfg.Server.HTTPPort,
 		padRight(cfg.Adapters.Local.HTTPPath, 20),
 		padRight(cfg.Clawdbot.Endpoint, 20),

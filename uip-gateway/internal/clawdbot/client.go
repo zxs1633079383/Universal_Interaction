@@ -21,10 +21,10 @@ import (
 type Client interface {
 	// ProcessEvent sends a CIE to Clawdbot and returns the interaction intent.
 	ProcessEvent(ctx context.Context, event *protocol.CanonicalInteractionEvent) (*protocol.InteractionIntent, error)
-	
+
 	// Close closes the client connection.
 	Close() error
-	
+
 	// Health checks if Clawdbot is reachable.
 	Health(ctx context.Context) error
 }
@@ -135,7 +135,7 @@ func NewHTTPClient(config Config, logger *zap.Logger) (*HTTPClient, error) {
 	if logger == nil {
 		logger, _ = zap.NewProduction()
 	}
-	
+
 	return &HTTPClient{
 		config: config,
 		httpClient: &http.Client{
@@ -152,7 +152,7 @@ func (c *HTTPClient) ProcessEvent(ctx context.Context, event *protocol.Canonical
 		return nil, fmt.Errorf("client is closed")
 	}
 	c.mu.RUnlock()
-	
+
 	// Extract text from payload
 	text := ""
 	if payload := event.Input.Payload; payload != nil {
@@ -160,7 +160,7 @@ func (c *HTTPClient) ProcessEvent(ctx context.Context, event *protocol.Canonical
 			text = t
 		}
 	}
-	
+
 	// Build request
 	req := ClawdbotRequest{
 		SessionID: event.Session.ExternalSessionID,
@@ -174,7 +174,7 @@ func (c *HTTPClient) ProcessEvent(ctx context.Context, event *protocol.Canonical
 			"capabilities":  event.Capabilities,
 		},
 	}
-	
+
 	// Execute with retry
 	var lastErr error
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
@@ -187,18 +187,18 @@ func (c *HTTPClient) ProcessEvent(ctx context.Context, event *protocol.Canonical
 				return nil, ctx.Err()
 			}
 		}
-		
+
 		intent, err := c.doRequest(ctx, req, event)
 		if err == nil {
 			return intent, nil
 		}
-		
+
 		lastErr = err
 		c.logger.Warn("Clawdbot request failed, retrying",
 			zap.Int("attempt", attempt+1),
 			zap.Error(err))
 	}
-	
+
 	return nil, fmt.Errorf("all retries exhausted: %w", lastErr)
 }
 
@@ -208,47 +208,47 @@ func (c *HTTPClient) doRequest(ctx context.Context, req ClawdbotRequest, event *
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
-	
+
 	// Create HTTP request
 	url := fmt.Sprintf("%s/api/v1/chat", c.config.Endpoint)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-	
+
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("X-Trace-ID", event.Meta.TraceID)
 	httpReq.Header.Set("X-Session-ID", event.Session.ExternalSessionID)
-	
+
 	// Execute request
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	// Read response
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
-	
+
 	// Check status code
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("server error: %d - %s", resp.StatusCode, string(respBody))
 	}
-	
+
 	// Parse response
 	var clawdbotResp ClawdbotResponse
 	if err := json.Unmarshal(respBody, &clawdbotResp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
-	
+
 	// Check for error in response
 	if clawdbotResp.Error != nil {
 		return nil, fmt.Errorf("clawdbot error: %s - %s", clawdbotResp.Error.Code, clawdbotResp.Error.Message)
 	}
-	
+
 	// Convert to InteractionIntent
 	intentType := protocol.IntentTypeReply
 	if clawdbotResp.Type == "ask" {
@@ -256,25 +256,25 @@ func (c *HTTPClient) doRequest(ctx context.Context, req ClawdbotRequest, event *
 	} else if clawdbotResp.Type == "notify" {
 		intentType = protocol.IntentTypeNotify
 	}
-	
+
 	intent := protocol.NewInteractionIntent(
 		intentType,
 		clawdbotResp.Response,
 		event.Session.ExternalSessionID,
 		event.InteractionID,
 	)
-	
+
 	c.logger.Debug("Received Clawdbot response",
 		zap.String("intentId", intent.IntentID),
 		zap.String("sessionId", event.Session.ExternalSessionID))
-	
+
 	return intent, nil
 }
 
 func (c *HTTPClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	c.closed = true
 	c.httpClient.CloseIdleConnections()
 	return nil
@@ -286,17 +286,17 @@ func (c *HTTPClient) Health(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("health check failed: %d", resp.StatusCode)
 	}
-	
+
 	return nil
 }
 
@@ -310,7 +310,7 @@ type MoltbotClient struct {
 	endpointID string
 	mu         sync.RWMutex
 	closed     bool
-	
+
 	// Pending responses - key is chat_id
 	pendingMu sync.RWMutex
 	pending   map[string]chan *protocol.InteractionIntent
@@ -321,7 +321,7 @@ func NewMoltbotClient(config Config, token string, endpointID string, logger *za
 	if logger == nil {
 		logger, _ = zap.NewProduction()
 	}
-	
+
 	return &MoltbotClient{
 		config: config,
 		httpClient: &http.Client{
@@ -341,7 +341,7 @@ func (c *MoltbotClient) ProcessEvent(ctx context.Context, event *protocol.Canoni
 		return nil, fmt.Errorf("client is closed")
 	}
 	c.mu.RUnlock()
-	
+
 	// Extract text from payload
 	text := ""
 	if payload := event.Input.Payload; payload != nil {
@@ -349,7 +349,7 @@ func (c *MoltbotClient) ProcessEvent(ctx context.Context, event *protocol.Canoni
 			text = t
 		}
 	}
-	
+
 	// Build Moltbot universal-im request
 	req := MoltbotUniversalIMRequest{
 		MessageID: event.InteractionID,
@@ -363,19 +363,19 @@ func (c *MoltbotClient) ProcessEvent(ctx context.Context, event *protocol.Canoni
 			Type: "private",
 		},
 	}
-	
+
 	// Create pending response channel
 	respCh := make(chan *protocol.InteractionIntent, 1)
 	c.pendingMu.Lock()
 	c.pending[event.Session.ExternalSessionID] = respCh
 	c.pendingMu.Unlock()
-	
+
 	defer func() {
 		c.pendingMu.Lock()
 		delete(c.pending, event.Session.ExternalSessionID)
 		c.pendingMu.Unlock()
 	}()
-	
+
 	// Execute with retry
 	var lastErr error
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
@@ -387,22 +387,22 @@ func (c *MoltbotClient) ProcessEvent(ctx context.Context, event *protocol.Canoni
 				return nil, ctx.Err()
 			}
 		}
-		
+
 		err := c.sendToMoltbot(ctx, req, event)
 		if err == nil {
 			break
 		}
-		
+
 		lastErr = err
 		c.logger.Warn("Moltbot request failed, retrying",
 			zap.Int("attempt", attempt+1),
 			zap.Error(err))
 	}
-	
+
 	if lastErr != nil {
 		return nil, fmt.Errorf("all retries exhausted: %w", lastErr)
 	}
-	
+
 	// Wait for callback response with timeout
 	select {
 	case intent := <-respCh:
@@ -423,50 +423,48 @@ func (c *MoltbotClient) sendToMoltbot(ctx context.Context, req MoltbotUniversalI
 	if err != nil {
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
-	
+
 	// Build URL - use universal-im webhook endpoint
+	// Note: Don't use path parameter - Moltbot identifies endpoint by token
 	url := fmt.Sprintf("%s/universal-im/webhook", c.config.Endpoint)
-	if c.endpointID != "" {
-		url = fmt.Sprintf("%s/universal-im/webhook/%s", c.config.Endpoint, c.endpointID)
-	}
-	
+
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
-	
+
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.token)
 	httpReq.Header.Set("X-Trace-ID", event.Meta.TraceID)
-	
+
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to read response: %w", err)
 	}
-	
+
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("server error: %d - %s", resp.StatusCode, string(respBody))
 	}
-	
+
 	var webhookResp MoltbotWebhookResponse
 	if err := json.Unmarshal(respBody, &webhookResp); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
-	
+
 	if !webhookResp.OK {
 		return fmt.Errorf("moltbot error: %s", webhookResp.Error)
 	}
-	
+
 	c.logger.Debug("Message sent to Moltbot",
 		zap.String("messageId", req.MessageID),
 		zap.Bool("replied", webhookResp.Replied))
-	
+
 	return nil
 }
 
@@ -476,20 +474,20 @@ func (c *MoltbotClient) HandleCallback(callback *MoltbotCallbackRequest) {
 	c.pendingMu.RLock()
 	respCh, exists := c.pending[callback.ChatID]
 	c.pendingMu.RUnlock()
-	
+
 	if !exists {
 		c.logger.Warn("Received callback for unknown session",
 			zap.String("chatId", callback.ChatID))
 		return
 	}
-	
+
 	intent := protocol.NewInteractionIntent(
 		protocol.IntentTypeReply,
 		callback.Text,
 		callback.ChatID,
 		callback.ReplyToMessageID,
 	)
-	
+
 	select {
 	case respCh <- intent:
 		c.logger.Debug("Callback processed",
@@ -503,7 +501,7 @@ func (c *MoltbotClient) HandleCallback(callback *MoltbotCallbackRequest) {
 func (c *MoltbotClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	c.closed = true
 	c.httpClient.CloseIdleConnections()
 	return nil
@@ -516,17 +514,17 @@ func (c *MoltbotClient) Health(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("health check failed: %d", resp.StatusCode)
 	}
-	
+
 	return nil
 }
 
@@ -556,7 +554,7 @@ func (c *MockClient) ProcessEvent(ctx context.Context, event *protocol.Canonical
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	
+
 	// Extract text from payload
 	text := ""
 	if payload := event.Input.Payload; payload != nil {
@@ -564,21 +562,21 @@ func (c *MockClient) ProcessEvent(ctx context.Context, event *protocol.Canonical
 			text = t
 		}
 	}
-	
+
 	// Generate mock response
 	response := c.response + text
-	
+
 	intent := protocol.NewInteractionIntent(
 		protocol.IntentTypeReply,
 		response,
 		event.Session.ExternalSessionID,
 		event.InteractionID,
 	)
-	
+
 	c.logger.Debug("Mock Clawdbot response",
 		zap.String("intentId", intent.IntentID),
 		zap.String("response", response))
-	
+
 	return intent, nil
 }
 

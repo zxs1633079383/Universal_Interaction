@@ -1,5 +1,12 @@
 # UIP Gateway 集成指南
 
+> ✅ **状态**: 已验证可用 (2026-01-30)
+> 
+> UIP Gateway 与 Moltbot 的完整通信链路已成功打通：
+> - Gateway 可以正确发送消息到 Moltbot
+> - Moltbot AI 可以正常处理并生成响应  
+> - Moltbot 可以通过回调将响应发送回 Gateway
+
 **文档版本**: 2.0  
 **最后更新**: 2026-01-30  
 **作者**: Clawdbot Architecture Group
@@ -787,7 +794,112 @@ export LOG_LEVEL="debug"
 
 ---
 
-## 附录：项目文件清单
+## 10. 常见问题与解决方案 (Troubleshooting)
+
+### 10.1 Session 状态导致的响应为空
+
+**问题**: AI 运行完成但 `hasReply=false`，`counts={"tool":0,"block":0,"final":0}`
+
+**原因**: 同一个 session ID 如果之前出现过异常，可能导致后续消息处理失败。
+
+**解决方案**: 使用新的唯一 session ID 测试。在生产环境中，确保每个用户会话使用唯一的 session ID。
+
+```bash
+# 使用时间戳生成唯一 session ID
+curl -X POST http://localhost:8080/api/v1/local/message \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"sessionId\": \"session-$(date +%s)\",
+    \"userId\": \"user-$(date +%s)\",
+    \"text\": \"你好\"
+  }"
+```
+
+### 10.2 Moltbot Gateway 进程未更新代码
+
+**问题**: 修改了 Moltbot 插件代码后，新代码没有生效。
+
+**原因**: `moltbot-gateway` 是独立的二进制进程，需要重启才能加载新代码。
+
+**解决方案**:
+
+```bash
+# 1. 查找并杀死旧进程
+ps aux | grep moltbot-gateway
+kill -9 <PID>
+
+# 2. 重新启动
+cd /path/to/moltbot
+pnpm moltbot gateway
+```
+
+### 10.3 Webhook 端点 404 错误
+
+**问题**: 调用 `/universal-im/webhook` 返回 404 或 "Method Not Allowed"
+
+**原因**: Webhook 路径需要包含 `endpointId`。
+
+**正确格式**: `/universal-im/webhook/:endpointId`
+
+```bash
+# ❌ 错误
+curl -X POST http://localhost:18789/universal-im/webhook
+
+# ✅ 正确
+curl -X POST http://localhost:18789/universal-im/webhook/uip-gateway \
+  -H "Authorization: Bearer uip-gateway-token" \
+  -d '{"message_id": "test-001", "text": "你好", ...}'
+```
+
+### 10.4 回调未发送到 Gateway
+
+**问题**: Moltbot 日志显示 `Callback succeeded` 但 Gateway 没有收到
+
+**检查步骤**:
+
+1. 验证 `callbackUrl` 配置正确:
+```bash
+cat ~/.clawdbot/moltbot.json | grep callbackUrl
+# 应该是: "http://localhost:8080/api/v1/callback"
+```
+
+2. 测试 Gateway 回调端点是否可达:
+```bash
+curl -X POST http://localhost:8080/api/v1/callback \
+  -H "Content-Type: application/json" \
+  -d '{"chat_id": "test", "text": "Hello"}'
+# 应该返回: {"ok": true}
+```
+
+3. 确保 Gateway 正在运行:
+```bash
+ps aux | grep uip-gateway
+```
+
+### 10.5 "context deadline exceeded" 超时错误
+
+**问题**: Gateway 日志显示 30 秒后超时
+
+**原因**: Gateway 等待 Moltbot 回调，但 Moltbot 没有发送或发送失败。
+
+**排查步骤**:
+
+1. 检查 Moltbot 日志是否有错误:
+```bash
+tail -50 /tmp/moltbot/moltbot-*.log | grep -E "error|fail|callback"
+```
+
+2. 确认 AI 是否正常响应:
+```bash
+# 使用 CLI 直接测试 AI
+pnpm moltbot agent --local -m "你好" --session-id test
+```
+
+3. 如果 AI 响应正常但没有回调，检查 `universal-im` 插件配置。
+
+---
+
+## 附录 A：项目文件清单
 
 ```
 uip-gateway/
@@ -803,4 +915,33 @@ uip-gateway/
 ├── config.yaml                   # 默认配置
 ├── Makefile                      # 构建脚本
 └── README.md                     # 使用文档
+```
+
+---
+
+## 附录 B：验证成功的完整日志示例
+
+以下是一次成功的端到端通信日志：
+
+```
+# 1. Gateway 收到用户消息
+{"level":"info","msg":"Processing event","interactionId":"xxx","sessionId":"demo-session"}
+
+# 2. Moltbot 收到 webhook
+[universal-im] Received message from uip-gateway
+[universal-im] Starting dispatch for session: universal-im:uip-gateway:demo-user
+[universal-im] Context: Body="你好", From=demo-user, ChatType=direct
+
+# 3. AI 处理并生成响应
+embedded run start: provider=qwen-portal model=coder-model
+embedded run done: durationMs=5000 aborted=false
+
+# 4. Moltbot 发送回调
+[universal-im] deliver called: kind=final, text=我是你的AI助手...
+[universal-im] Reply dispatch completed: hasReply=true, queuedFinal=true
+[universal-im] Sending callback
+[universal-im] Callback succeeded
+
+# 5. Gateway 收到回调
+{"level":"info","msg":"Received Moltbot callback","chatId":"demo-user","text":"我是你的AI助手..."}
 ```
