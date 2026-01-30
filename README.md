@@ -1,7 +1,7 @@
 # 🌐 Universal Interaction Protocol (UIP)
 
 <p align="center">
-  <strong>让任何 IM 都能接入 AI Agent 的通用协议</strong>
+  <strong>A universal protocol that enables any IM to connect with AI Agents</strong>
 </p>
 
 <p align="center">
@@ -11,73 +11,77 @@
   <img src="https://img.shields.io/badge/Lang-Go-00ADD8?style=for-the-badge&logo=go" alt="Go">
 </p>
 
+<p align="center">
+  <a href="README_CN.md">🇨🇳 中文文档</a>
+</p>
+
 ---
 
-## 📖 项目简介
+## 📖 Overview
 
-**Universal Interaction Protocol (UIP)** 是一套 IM 无关的交互协议，让任何即时通讯系统都能无缝接入 [Moltbot](https://github.com/zxs1633079383/moltbot) AI Agent。
+**Universal Interaction Protocol (UIP)** is an IM-agnostic interaction protocol that enables any Instant Messaging system to seamlessly connect with [Moltbot](https://github.com/zxs1633079383/moltbot) AI Agent.
 
-> ✅ **状态**: MVP 完成，端到端通信已验证通过 (2026-01-30)
+> ✅ **Status**: MVP Complete, End-to-end communication verified (2026-01-30)
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  任意 IM    │────▶│ UIP Gateway │────▶│   Moltbot   │
-│  微信/飞书/  │◀────│   (Go)      │◀────│  AI Agent   │
-│  钉钉/Slack │     └─────────────┘     └─────────────┘
+│   Any IM    │────▶│ UIP Gateway │────▶│   Moltbot   │
+│  WeChat/    │◀────│    (Go)     │◀────│  AI Agent   │
+│  Slack/etc  │     └─────────────┘     └─────────────┘
 └─────────────┘           │
        │           Universal IM
        │            Protocol
        └──────────────────┘
 ```
 
-## ✨ 核心特性
+## ✨ Key Features
 
-| 特性 | 说明 |
-|------|------|
-| 🔌 **IM 无关性** | 一套协议接入所有 IM，屏蔽平台差异 |
-| 🚀 **高性能** | Go 实现的 Gateway，原生并发支持 |
-| 🔄 **双向通信** | 支持同步请求和异步回调 |
-| 🧩 **可扩展** | 插件化适配器架构 |
-| 🤝 **Moltbot 深度集成** | 复用官方 `universal-im` 插件 |
+| Feature | Description |
+|---------|-------------|
+| 🔌 **IM Agnostic** | One protocol for all IMs, abstracts platform differences |
+| 🚀 **High Performance** | Go-based Gateway with native concurrency support |
+| 🔄 **Bidirectional** | Supports both sync requests and async callbacks |
+| 🧩 **Extensible** | Plugin-based adapter architecture |
+| 🤝 **Moltbot Integration** | Reuse and further develop the `universal-im` plugin |
 
-## 🏗️ 架构
+## 🏗️ Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              数据流向                                        │
+│                              Data Flow                                       │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│   [用户 IM]  ──HTTP──▶  [UIP Gateway]  ──webhook──▶  [Moltbot]              │
+│   [User IM]  ──HTTP──▶  [UIP Gateway]  ──webhook──▶  [Moltbot]              │
 │       │                      │                           │                   │
-│       │                      │                           │ AI 处理           │
+│       │                      │                           │ AI Processing     │
 │       │                      │                           ▼                   │
 │       │                      │ ◀────callback────  [AI Response]             │
 │       │                      │                                               │
 │       │ ◀────Intent────     │                                               │
 │       ▼                      │                                               │
-│   [显示响应]                 │                                               │
+│   [Display]                  │                                               │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
-### 1. 克隆项目
+### 1. Clone the project
 
 ```bash
 git clone https://github.com/zxs1633079383/Universal_Interaction.git
 cd Universal_Interaction/uip-gateway
 ```
 
-### 2. 构建 Gateway
+### 2. Build the Gateway
 
 ```bash
 make build
 ```
 
-### 3. 配置 Moltbot
+### 3. Configure Moltbot
 
-确保你的 Moltbot 已配置 `universal-im` 插件。编辑 `~/.clawdbot/moltbot.json`：
+Ensure your Moltbot has the `universal-im` plugin configured. Edit `~/.clawdbot/moltbot.json`:
 
 ```json
 {
@@ -97,96 +101,96 @@ make build
 }
 ```
 
-### 4. 启动服务
+### 4. Start the services
 
 ```bash
-# 终端 1: 启动 Moltbot Gateway
+# Terminal 1: Start Moltbot Gateway
 cd /path/to/moltbot
 pnpm moltbot gateway
 
-# 终端 2: 启动 UIP Gateway
+# Terminal 2: Start UIP Gateway
 cd /path/to/Universal_Interaction/uip-gateway
 ./bin/uip-gateway -config config.yaml
 ```
 
-### 5. 测试
+### 5. Test
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/local/message \
   -H "Content-Type: application/json" \
-  -d '{"sessionId": "test-001", "userId": "user1", "text": "你好"}'
+  -d '{"sessionId": "test-001", "userId": "user1", "text": "Hello"}'
 ```
 
-## 📁 项目结构
+## 📁 Project Structure
 
 ```
 Universal_Interaction/
-├── md/                                    # 文档
-│   ├── im_agnostic_clawdbot_adapter_architecture.md  # 协议规范
-│   ├── UIP_Gateway_Integration_Guide.md              # 集成指南
-│   ├── Development_Journey_Universal_Interaction.md  # 开发历程
-│   └── Team_Share_Moltbot_Universal_IM_Vision.md     # 团队分享
+├── md/                                    # Documentation
+│   ├── im_agnostic_clawdbot_adapter_architecture.md  # Protocol spec
+│   ├── UIP_Gateway_Integration_Guide.md              # Integration guide
+│   ├── Development_Journey_Universal_Interaction.md  # Dev journey
+│   └── Team_Share_Moltbot_Universal_IM_Vision.md     # Team sharing
 │
-├── uip-gateway/                           # Go Gateway 实现
-│   ├── cmd/gateway/main.go               # 主程序入口
+├── uip-gateway/                           # Go Gateway implementation
+│   ├── cmd/gateway/main.go               # Main entry
 │   ├── internal/
-│   │   ├── protocol/uip.go               # UIP 协议定义
-│   │   ├── gateway/gateway.go            # 网关核心逻辑
-│   │   ├── adapter/local/local.go        # 本地 HTTP/WS 适配器
-│   │   └── clawdbot/client.go            # Moltbot 客户端
-│   ├── config.yaml                       # 默认配置
-│   ├── Makefile                          # 构建脚本
-│   └── Dockerfile                        # Docker 镜像
+│   │   ├── protocol/uip.go               # UIP protocol definitions
+│   │   ├── gateway/gateway.go            # Gateway core logic
+│   │   ├── adapter/local/local.go        # Local HTTP/WS adapter
+│   │   └── clawdbot/client.go            # Moltbot client
+│   ├── config.yaml                       # Default config
+│   ├── Makefile                          # Build script
+│   └── Dockerfile                        # Docker image
 │
-└── README.md                             # 本文件
+└── README.md                             # This file
 ```
 
-## 📚 文档
+## 📚 Documentation
 
-| 文档 | 说明 |
-|------|------|
-| [协议规范](md/im_agnostic_clawdbot_adapter_architecture.md) | UIP 协议详细定义 |
-| [集成指南](md/UIP_Gateway_Integration_Guide.md) | 完整的集成步骤和 API 参考 |
-| [开发历程](md/Development_Journey_Universal_Interaction.md) | 踩坑记录 + 快速开发指南 |
-| [团队分享](md/Team_Share_Moltbot_Universal_IM_Vision.md) | 战略价值分析 |
+| Document | Description |
+|----------|-------------|
+| [Protocol Spec](md/im_agnostic_clawdbot_adapter_architecture.md) | UIP protocol detailed definition |
+| [Integration Guide](md/UIP_Gateway_Integration_Guide.md) | Complete integration steps and API reference |
+| [Dev Journey](md/Development_Journey_Universal_Interaction.md) | Lessons learned + quick dev guide |
+| [Team Sharing](md/Team_Share_Moltbot_Universal_IM_Vision.md) | Strategic value analysis |
 
-## 🔗 相关项目
+## 🔗 Related Projects
 
-| 项目 | 说明 |
-|------|------|
-| [Moltbot](https://github.com/zxs1633079383/moltbot) | AI Agent 核心，本项目的 Moltbot Fork |
-| [Moltbot 官方](https://github.com/moltbot/moltbot) | Moltbot 官方仓库 |
+| Project | Description |
+|---------|-------------|
+| [Moltbot (Fork)](https://github.com/zxs1633079383/moltbot) | AI Agent core, our Moltbot fork with universal-im |
+| [Moltbot Official](https://github.com/moltbot/moltbot) | Official Moltbot repository |
 
-## 🛠️ 开发命令
+## 🛠️ Development Commands
 
 ```bash
-# 构建
+# Build
 cd uip-gateway && make build
 
-# 运行 (正常模式)
+# Run (normal mode)
 ./bin/uip-gateway -config config.yaml
 
-# 运行 (Mock 模式，用于测试)
+# Run (mock mode for testing)
 ./bin/uip-gateway -mock -config config.yaml
 
-# 健康检查
+# Health check
 curl http://localhost:8080/health
 
-# 查看 Moltbot 日志
+# View Moltbot logs
 tail -f /tmp/moltbot/moltbot-$(date +%Y-%m-%d).log | grep "\[universal-im\]"
 ```
 
-## 🗺️ 路线图
+## 🗺️ Roadmap
 
-- [x] UIP 协议设计
-- [x] Go Gateway 实现
-- [x] Moltbot universal-im 插件集成
-- [x] 端到端验证
-- [ ] WebSocket 实时推送
-- [ ] 企业微信适配器
-- [ ] 飞书适配器
-- [ ] 钉钉适配器
-- [ ] Kubernetes 部署方案
+- [x] UIP protocol design
+- [x] Go Gateway implementation
+- [x] Moltbot universal-im plugin integration
+- [x] End-to-end verification
+- [ ] WebSocket real-time push
+- [ ] WeChat Work adapter
+- [ ] Lark/Feishu adapter
+- [ ] DingTalk adapter
+- [ ] Kubernetes deployment
 
 ## 📄 License
 
