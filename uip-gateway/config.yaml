@@ -1,5 +1,5 @@
 # UIP Gateway Configuration
-# Universal Interaction Protocol Gateway
+# Universal Interaction Protocol Gateway for OpenClaw
 
 server:
   http_port: 8080
@@ -9,9 +9,13 @@ server:
   write_timeout: 30s
   shutdown_timeout: 10s
 
+# OpenClaw Universal IM Configuration
 clawdbot:
-  # Moltbot gateway endpoint (default port 18789)
+  # OpenClaw gateway endpoint
+  # 方案1: 使用 OpenClaw Gateway (端口 18789) - 需要正确配置 Universal IM 插件
   endpoint: "http://localhost:18789"
+  # 方案2: 使用 test-server.ts (端口 3456) - 验证消息格式
+#  endpoint: "http://localhost:3456"
   # Request timeout
   timeout: 30s
   # Retry policy
@@ -23,18 +27,39 @@ clawdbot:
   # Use insecure connection (for local dev)
   insecure: true
   
-  # Moltbot universal-im integration
-  mode: "moltbot"  # "moltbot" (universal-im) or "legacy"
+  # Mode: "openclaw" (universal-im) or "legacy"
+  mode: "openclaw"
   
-  # Token for authenticating with moltbot universal-im
-  # This should match the token in moltbot's universal-im endpoint config
-  token: "uip-gateway-token"
+  # Our callback URL - OpenClaw will POST AI responses here
+  callback_url: "http://localhost:8080/api/v1/openclaw/outbound"
   
-  # Endpoint ID in moltbot config
-  endpoint_id: "uip-gateway"
-  
-  # Our callback URL - moltbot will POST responses here
-  callback_url: "http://localhost:8080/api/v1/callback"
+  # Universal IM specific configuration
+  universal_im:
+    # Account ID in OpenClaw config (default: "default")
+    account_id: "default"
+    
+    # Transport type: "webhook", "websocket", or "polling"
+    transport: "webhook"
+    
+    # Webhook secret for X-Webhook-Secret header authentication
+    # This should match the secret configured in OpenClaw's universal-im config
+    secret: ""
+    
+    # Our outbound URL - OpenClaw will POST AI responses to this endpoint
+    outbound_url: "http://localhost:8080/api/v1/openclaw/outbound"
+    
+    # Optional: Authorization header for outbound requests
+    outbound_auth_header: ""
+    
+    # WebSocket configuration (used when transport: "websocket")
+    # websocket:
+    #   url: "wss://your-im-server/ws"
+    #   reconnect_ms: 5000
+    
+    # Polling configuration (used when transport: "polling")
+    # polling:
+    #   url: "http://your-im-server/messages"
+    #   interval_ms: 3000
 
 adapters:
   local:
@@ -66,3 +91,50 @@ observability:
   metrics_port: 9091
   # Log level: debug, info, warn, error
   log_level: "info"
+
+# ============================================================================
+# OpenClaw Universal IM Integration Guide
+# ============================================================================
+#
+# This UIP Gateway integrates with OpenClaw's Universal IM plugin.
+#
+# SETUP STEPS:
+#
+# 1. Configure OpenClaw's universal-im channel in ~/.openclaw/config.yaml:
+#
+#    channels:
+#      universal-im:
+#        enabled: true
+#        transport: webhook
+#        webhook:
+#          path: /universal-im/default/webhook
+#          secret: your-secret-here
+#        outbound:
+#          url: http://localhost:8080/api/v1/openclaw/outbound
+#          authHeader: Bearer your-token
+#        dmPolicy: open
+#        allowFrom:
+#          - "*"
+#
+# 2. Start OpenClaw gateway:
+#    $ openclaw gateway run
+#
+# 3. Start UIP Gateway:
+#    $ ./uip-gateway -config config.yaml
+#
+# 4. Send messages via UIP Gateway's local adapter:
+#    $ curl -X POST http://localhost:8080/api/v1/local/message \
+#        -H "Content-Type: application/json" \
+#        -d '{"user_id":"user1","session_id":"sess1","text":"Hello AI!"}'
+#
+# MESSAGE FLOW:
+#
+#   [Your App] --POST--> [UIP Gateway] --POST--> [OpenClaw Universal IM]
+#                                                       |
+#                                                       v
+#                                                  [AI Engine]
+#                                                       |
+#                                                       v
+#   [Your App] <--return-- [UIP Gateway] <--POST-- [OpenClaw outbound]
+#
+# ============================================================================

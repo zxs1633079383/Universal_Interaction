@@ -1,5 +1,5 @@
-// Package clawdbot provides a client for communicating with Clawdbot runtime.
-// This client translates UIP events into Clawdbot-native requests and responses.
+// Package clawdbot provides a client for communicating with OpenClaw (formerly Clawdbot) runtime.
+// This client translates UIP events into OpenClaw Universal IM requests and responses.
 package clawdbot
 
 import (
@@ -17,21 +17,21 @@ import (
 	"github.com/zlc_ai/uip-gateway/internal/protocol"
 )
 
-// Client is the interface for Clawdbot communication.
+// Client is the interface for OpenClaw communication.
 type Client interface {
-	// ProcessEvent sends a CIE to Clawdbot and returns the interaction intent.
+	// ProcessEvent sends a CIE to OpenClaw and returns the interaction intent.
 	ProcessEvent(ctx context.Context, event *protocol.CanonicalInteractionEvent) (*protocol.InteractionIntent, error)
 
 	// Close closes the client connection.
 	Close() error
 
-	// Health checks if Clawdbot is reachable.
+	// Health checks if OpenClaw is reachable.
 	Health(ctx context.Context) error
 }
 
-// Config holds the configuration for the Clawdbot client.
+// Config holds the configuration for the OpenClaw client.
 type Config struct {
-	// Endpoint is the Clawdbot server address.
+	// Endpoint is the OpenClaw gateway server address.
 	Endpoint string `json:"endpoint" yaml:"endpoint"`
 	// Timeout is the request timeout.
 	Timeout time.Duration `json:"timeout" yaml:"timeout"`
@@ -41,10 +41,10 @@ type Config struct {
 	Insecure bool `json:"insecure" yaml:"insecure"`
 }
 
-// DefaultConfig returns the default Clawdbot client configuration.
+// DefaultConfig returns the default OpenClaw client configuration.
 func DefaultConfig() Config {
 	return Config{
-		Endpoint:   "http://localhost:50051",
+		Endpoint:   "http://localhost:18789",
 		Timeout:    30 * time.Second,
 		MaxRetries: 3,
 		Insecure:   true,
@@ -60,53 +60,78 @@ type HTTPClient struct {
 	closed     bool
 }
 
-// MoltbotUniversalIMRequest is the request format for Moltbot universal-im webhook.
-// This follows the universal-im plugin's expected format.
-type MoltbotUniversalIMRequest struct {
+// OpenclawUniversalIMRequest is the request format for OpenClaw universal-im webhook.
+// This follows the universal-im plugin's Custom Provider expected format.
+type OpenclawUniversalIMRequest struct {
 	// MessageID is a unique identifier for the message.
-	MessageID string `json:"message_id"`
+	MessageID string `json:"messageId,omitempty"`
+	// Timestamp is Unix timestamp in milliseconds.
+	Timestamp int64 `json:"timestamp,omitempty"`
+	// Sender contains sender information.
+	Sender OpenclawSender `json:"sender"`
+	// Conversation contains conversation information.
+	Conversation OpenclawConversation `json:"conversation"`
 	// Text is the message content.
-	Text string `json:"text"`
-	// From contains sender information.
-	From MoltbotFrom `json:"from"`
-	// Chat contains conversation information.
-	Chat MoltbotChat `json:"chat"`
+	Text string `json:"text,omitempty"`
+	// Attachments is an optional array of attachments.
+	Attachments []OpenclawAttachment `json:"attachments,omitempty"`
+	// Mentions is an optional array of mentioned user IDs.
+	Mentions []string `json:"mentions,omitempty"`
+	// Meta is optional provider-specific metadata.
+	Meta map[string]interface{} `json:"meta,omitempty"`
 }
 
-// MoltbotFrom represents the sender.
-type MoltbotFrom struct {
-	ID   string `json:"id"`
-	Name string `json:"name,omitempty"`
+// OpenclawSender represents the sender.
+type OpenclawSender struct {
+	ID       string `json:"id"`
+	Name     string `json:"name,omitempty"`
+	Username string `json:"username,omitempty"`
+	IsBot    bool   `json:"isBot,omitempty"`
 }
 
-// MoltbotChat represents the chat/conversation.
-type MoltbotChat struct {
-	ID    string `json:"id"`
-	Type  string `json:"type"` // "private" or "group"
-	Title string `json:"title,omitempty"`
+// OpenclawConversation represents the conversation context.
+type OpenclawConversation struct {
+	Type     string `json:"type"` // "direct", "group", or "channel"
+	ID       string `json:"id"`
+	Name     string `json:"name,omitempty"`
+	ThreadID string `json:"threadId,omitempty"`
+	TeamID   string `json:"teamId,omitempty"`
 }
 
-// MoltbotWebhookResponse is the immediate response from the webhook.
-type MoltbotWebhookResponse struct {
+// OpenclawAttachment represents an attachment.
+type OpenclawAttachment struct {
+	Kind        string `json:"kind"` // "image", "audio", "video", "document", "unknown"
+	URL         string `json:"url,omitempty"`
+	Path        string `json:"path,omitempty"`
+	ContentType string `json:"contentType,omitempty"`
+	FileName    string `json:"fileName,omitempty"`
+	Size        int64  `json:"size,omitempty"`
+}
+
+// OpenclawWebhookResponse is the immediate response from the webhook.
+type OpenclawWebhookResponse struct {
 	OK        bool   `json:"ok"`
 	MessageID string `json:"messageId,omitempty"`
-	Replied   bool   `json:"replied,omitempty"`
-	Elapsed   int64  `json:"elapsed,omitempty"`
 	Error     string `json:"error,omitempty"`
 }
 
-// MoltbotCallbackRequest is the callback format from Moltbot to our endpoint.
-// This is what Moltbot sends to our callbackUrl.
-type MoltbotCallbackRequest struct {
-	// ChatID is the target chat.
-	ChatID string `json:"chat_id"`
-	// Text is the response text.
+// OpenclawOutboundPayload is the format OpenClaw sends to our outbound URL.
+// This is what OpenClaw posts to our callback endpoint when AI responds.
+type OpenclawOutboundPayload struct {
+	// To is the target in format "user:userId" or "channel:channelId"
+	To string `json:"to"`
+	// Text is the AI response text.
 	Text string `json:"text"`
-	// ReplyToMessageID is the original message being replied to.
-	ReplyToMessageID string `json:"reply_to_message_id,omitempty"`
-	// MediaURL is optional media attachment.
-	MediaURL string `json:"media_url,omitempty"`
+	// MediaUrl is optional media attachment URL.
+	MediaUrl string `json:"mediaUrl,omitempty"`
+	// ReplyToId is the original message ID being replied to.
+	ReplyToId string `json:"replyToId,omitempty"`
+	// ThreadId is the thread ID for threaded conversations.
+	ThreadId string `json:"threadId,omitempty"`
 }
+
+// Legacy type aliases for backward compatibility
+type MoltbotCallbackRequest = OpenclawOutboundPayload
 
 // Legacy format support
 type ClawdbotRequest struct {
@@ -300,41 +325,63 @@ func (c *HTTPClient) Health(ctx context.Context) error {
 	return nil
 }
 
-// MoltbotClient implements the Client interface for Moltbot's universal-im plugin.
-// This client sends messages to the /universal-im/webhook endpoint.
-type MoltbotClient struct {
-	config     Config
-	httpClient *http.Client
-	logger     *zap.Logger
-	token      string
-	endpointID string
-	mu         sync.RWMutex
-	closed     bool
+// OpenclawClient implements the Client interface for OpenClaw's universal-im plugin.
+// This client sends messages to the /universal-im/{accountId}/webhook endpoint.
+type OpenclawClient struct {
+	config      Config
+	httpClient  *http.Client
+	logger      *zap.Logger
+	secret      string // Webhook secret for authentication
+	accountID   string // Account ID in OpenClaw config (default: "default")
+	webhookPath string // Custom webhook path (optional)
+	mu          sync.RWMutex
+	closed      bool
 
-	// Pending responses - key is chat_id
+	// Pending responses - key is conversation_id
 	pendingMu sync.RWMutex
 	pending   map[string]chan *protocol.InteractionIntent
 }
 
-// NewMoltbotClient creates a new Moltbot universal-im client.
-func NewMoltbotClient(config Config, token string, endpointID string, logger *zap.Logger) (*MoltbotClient, error) {
+// OpenclawClientConfig holds additional configuration for OpenclawClient
+type OpenclawClientConfig struct {
+	Secret      string // Webhook secret (X-Webhook-Secret header)
+	AccountID   string // Account ID (default: "default")
+	WebhookPath string // Custom webhook path (default: "/universal-im/{accountId}/webhook")
+}
+
+// NewOpenclawClient creates a new OpenClaw universal-im client.
+func NewOpenclawClient(config Config, opts OpenclawClientConfig, logger *zap.Logger) (*OpenclawClient, error) {
 	if logger == nil {
 		logger, _ = zap.NewProduction()
 	}
 
-	return &MoltbotClient{
+	accountID := opts.AccountID
+	if accountID == "" {
+		accountID = "default"
+	}
+
+	return &OpenclawClient{
 		config: config,
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 		},
-		logger:     logger,
-		token:      token,
-		endpointID: endpointID,
-		pending:    make(map[string]chan *protocol.InteractionIntent),
+		logger:      logger,
+		secret:      opts.Secret,
+		accountID:   accountID,
+		webhookPath: opts.WebhookPath,
+		pending:     make(map[string]chan *protocol.InteractionIntent),
 	}, nil
 }
 
-func (c *MoltbotClient) ProcessEvent(ctx context.Context, event *protocol.CanonicalInteractionEvent) (*protocol.InteractionIntent, error) {
+// NewMoltbotClient is a legacy alias for NewOpenclawClient
+func NewMoltbotClient(config Config, token string, endpointID string, logger *zap.Logger) (*OpenclawClient, error) {
+	return NewOpenclawClient(config, OpenclawClientConfig{
+		Secret:    token,
+		AccountID: endpointID,
+	}, logger)
+}
+
+func (c *OpenclawClient) ProcessEvent(ctx context.Context, event *protocol.CanonicalInteractionEvent) (*protocol.InteractionIntent, error) {
 	c.mu.RLock()
 	if c.closed {
 		c.mu.RUnlock()
@@ -350,29 +397,60 @@ func (c *MoltbotClient) ProcessEvent(ctx context.Context, event *protocol.Canoni
 		}
 	}
 
-	// Build Moltbot universal-im request
-	req := MoltbotUniversalIMRequest{
+	// Extract attachments if any
+	var attachments []OpenclawAttachment
+	if payload := event.Input.Payload; payload != nil {
+		if atts, ok := payload["attachments"].([]interface{}); ok {
+			for _, att := range atts {
+				if attMap, ok := att.(map[string]interface{}); ok {
+					attachment := OpenclawAttachment{
+						Kind: getString(attMap, "kind", "unknown"),
+						URL:  getString(attMap, "url", ""),
+					}
+					attachments = append(attachments, attachment)
+				}
+			}
+		}
+	}
+
+	// Determine conversation type from input payload
+	convType := "direct"
+	if payload := event.Input.Payload; payload != nil {
+		if ct, ok := payload["conversationType"].(string); ok {
+			convType = ct
+		}
+	}
+
+	// Build OpenClaw universal-im request (Custom Provider format)
+	req := OpenclawUniversalIMRequest{
 		MessageID: event.InteractionID,
-		Text:      text,
-		From: MoltbotFrom{
+		Timestamp: time.Now().UnixMilli(),
+		Sender: OpenclawSender{
 			ID:   event.Session.UserID,
-			Name: event.Session.UserID,
+			Name: event.Session.UserID, // Can be enhanced with actual name
 		},
-		Chat: MoltbotChat{
+		Conversation: OpenclawConversation{
+			Type: convType,
 			ID:   event.Session.ExternalSessionID,
-			Type: "private",
+		},
+		Text:        text,
+		Attachments: attachments,
+		Meta: map[string]interface{}{
+			"traceId":      event.Meta.TraceID,
+			"capabilities": event.Capabilities,
 		},
 	}
 
-	// Create pending response channel
+	// Create pending response channel for synchronous response
+	conversationKey := event.Session.ExternalSessionID
 	respCh := make(chan *protocol.InteractionIntent, 1)
 	c.pendingMu.Lock()
-	c.pending[event.Session.ExternalSessionID] = respCh
+	c.pending[conversationKey] = respCh
 	c.pendingMu.Unlock()
 
 	defer func() {
 		c.pendingMu.Lock()
-		delete(c.pending, event.Session.ExternalSessionID)
+		delete(c.pending, conversationKey)
 		c.pendingMu.Unlock()
 	}()
 
@@ -388,13 +466,13 @@ func (c *MoltbotClient) ProcessEvent(ctx context.Context, event *protocol.Canoni
 			}
 		}
 
-		err := c.sendToMoltbot(ctx, req, event)
+		err := c.sendToOpenclaw(ctx, req, event)
 		if err == nil {
 			break
 		}
 
 		lastErr = err
-		c.logger.Warn("Moltbot request failed, retrying",
+		c.logger.Warn("OpenClaw request failed, retrying",
 			zap.Int("attempt", attempt+1),
 			zap.Error(err))
 	}
@@ -403,30 +481,86 @@ func (c *MoltbotClient) ProcessEvent(ctx context.Context, event *protocol.Canoni
 		return nil, fmt.Errorf("all retries exhausted: %w", lastErr)
 	}
 
-	// Wait for callback response with timeout
+	// Chat Completions API is synchronous, so the response should already be in the channel
 	select {
 	case intent := <-respCh:
 		return intent, nil
-	case <-time.After(c.config.Timeout):
-		// If we timeout waiting for callback, return a timeout error
-		// The callback may still arrive later
-		c.logger.Warn("Timeout waiting for Moltbot callback",
-			zap.String("sessionId", event.Session.ExternalSessionID))
-		return nil, fmt.Errorf("timeout waiting for Moltbot response")
+	case <-time.After(100 * time.Millisecond):
+		// If no response in channel, something went wrong
+		c.logger.Warn("No response received from OpenClaw",
+			zap.String("conversationId", conversationKey))
+		return nil, fmt.Errorf("no response from OpenClaw")
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 }
 
-func (c *MoltbotClient) sendToMoltbot(ctx context.Context, req MoltbotUniversalIMRequest, event *protocol.CanonicalInteractionEvent) error {
+// ChatCompletionsRequest is the OpenAI-compatible request format.
+type ChatCompletionsRequest struct {
+	Model    string                   `json:"model"`
+	Messages []ChatCompletionsMessage `json:"messages"`
+	Stream   bool                     `json:"stream,omitempty"`
+}
+
+// ChatCompletionsMessage is a single message in the chat.
+type ChatCompletionsMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// ChatCompletionsResponse is the OpenAI-compatible response format.
+type ChatCompletionsResponse struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	Model   string `json:"model"`
+	Choices []struct {
+		Index   int `json:"index"`
+		Message struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Error *struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	} `json:"error,omitempty"`
+}
+
+func (c *OpenclawClient) sendToOpenclaw(ctx context.Context, req OpenclawUniversalIMRequest, event *protocol.CanonicalInteractionEvent) error {
+	// Try webhook first (for test-server or properly configured OpenClaw)
+	err := c.sendViaWebhook(ctx, req, event)
+	if err != nil {
+		c.logger.Debug("Webhook failed, trying Chat Completions API",
+			zap.Error(err))
+		// Fallback to Chat Completions API
+		return c.sendViaChatCompletions(ctx, req, event)
+	}
+	return nil
+}
+
+// sendViaWebhook sends message via Universal IM webhook endpoint
+func (c *OpenclawClient) sendViaWebhook(ctx context.Context, req OpenclawUniversalIMRequest, event *protocol.CanonicalInteractionEvent) error {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Build URL - use universal-im webhook endpoint
-	// Note: Don't use path parameter - Moltbot identifies endpoint by token
-	url := fmt.Sprintf("%s/universal-im/webhook", c.config.Endpoint)
+	// Use universal-im webhook endpoint
+	// Format: /universal-im/{accountId}/webhook (accountId defaults to "default")
+	var url string
+	if c.webhookPath != "" {
+		url = fmt.Sprintf("%s%s", c.config.Endpoint, c.webhookPath)
+	} else {
+		// Default path with accountId
+		url = fmt.Sprintf("%s/universal-im/%s/webhook", c.config.Endpoint, c.accountID)
+	}
+
+	c.logger.Debug("Sending webhook request",
+		zap.String("url", url),
+		zap.String("accountId", c.accountID),
+		zap.Int("bodyLen", len(body)))
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -434,7 +568,9 @@ func (c *MoltbotClient) sendToMoltbot(ctx context.Context, req MoltbotUniversalI
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.token)
+	if c.secret != "" {
+		httpReq.Header.Set("X-Webhook-Secret", c.secret)
+	}
 	httpReq.Header.Set("X-Trace-ID", event.Meta.TraceID)
 
 	resp, err := c.httpClient.Do(httpReq)
@@ -452,53 +588,176 @@ func (c *MoltbotClient) sendToMoltbot(ctx context.Context, req MoltbotUniversalI
 		return fmt.Errorf("server error: %d - %s", resp.StatusCode, string(respBody))
 	}
 
-	var webhookResp MoltbotWebhookResponse
+	var webhookResp OpenclawWebhookResponse
 	if err := json.Unmarshal(respBody, &webhookResp); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 
 	if !webhookResp.OK {
-		return fmt.Errorf("moltbot error: %s", webhookResp.Error)
+		return fmt.Errorf("webhook error: %s", webhookResp.Error)
 	}
 
-	c.logger.Debug("Message sent to Moltbot",
+	c.logger.Info("Message sent via webhook",
 		zap.String("messageId", req.MessageID),
-		zap.Bool("replied", webhookResp.Replied))
+		zap.String("endpoint", url))
+
+	// Webhook mode: response comes via outbound callback, deliver a placeholder
+	c.deliverResponse(event.Session.ExternalSessionID,
+		"消息已发送到 OpenClaw，等待 AI 响应...", req.MessageID)
 
 	return nil
 }
 
-// HandleCallback processes the callback from Moltbot.
-// This should be called when Moltbot posts to our callback URL.
-func (c *MoltbotClient) HandleCallback(callback *MoltbotCallbackRequest) {
+// sendViaChatCompletions sends message via OpenAI-compatible Chat Completions API
+func (c *OpenclawClient) sendViaChatCompletions(ctx context.Context, req OpenclawUniversalIMRequest, event *protocol.CanonicalInteractionEvent) error {
+	chatReq := ChatCompletionsRequest{
+		Model: "default",
+		Messages: []ChatCompletionsMessage{
+			{
+				Role:    "user",
+				Content: req.Text,
+			},
+		},
+		Stream: false,
+	}
+
+	body, err := json.Marshal(chatReq)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/v1/chat/completions", c.config.Endpoint)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.secret != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.secret)
+	}
+	httpReq.Header.Set("X-Trace-ID", event.Meta.TraceID)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("server error: %d - %s", resp.StatusCode, string(respBody))
+	}
+
+	var chatResp ChatCompletionsResponse
+	if err := json.Unmarshal(respBody, &chatResp); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if chatResp.Error != nil {
+		return fmt.Errorf("chat completions error: %s", chatResp.Error.Message)
+	}
+
+	// Extract the response text
+	if len(chatResp.Choices) > 0 {
+		responseText := chatResp.Choices[0].Message.Content
+		c.logger.Info("Received AI response via Chat Completions",
+			zap.String("messageId", req.MessageID),
+			zap.Int("responseLen", len(responseText)))
+
+		c.deliverResponse(event.Session.ExternalSessionID, responseText, req.MessageID)
+	}
+
+	return nil
+}
+
+// deliverResponse delivers the AI response to the pending channel.
+func (c *OpenclawClient) deliverResponse(conversationID, text, replyToID string) {
 	c.pendingMu.RLock()
-	respCh, exists := c.pending[callback.ChatID]
+	respCh, exists := c.pending[conversationID]
 	c.pendingMu.RUnlock()
 
 	if !exists {
-		c.logger.Warn("Received callback for unknown session",
-			zap.String("chatId", callback.ChatID))
+		c.logger.Warn("No pending channel for response",
+			zap.String("conversationId", conversationID))
+		return
+	}
+
+	intent := protocol.NewInteractionIntent(
+		protocol.IntentTypeReply,
+		text,
+		conversationID,
+		replyToID,
+	)
+
+	select {
+	case respCh <- intent:
+		c.logger.Debug("Response delivered",
+			zap.String("conversationId", conversationID))
+	default:
+		c.logger.Warn("Response channel full",
+			zap.String("conversationId", conversationID))
+	}
+}
+
+// HandleCallback processes the callback from OpenClaw.
+// This should be called when OpenClaw posts to our outbound URL.
+func (c *OpenclawClient) HandleCallback(callback *OpenclawOutboundPayload) {
+	// Parse the "to" field to extract conversation ID
+	// Format: "user:userId" or "channel:channelId" or "group:groupId"
+	conversationID := callback.To
+	if len(callback.To) > 0 {
+		// Extract the ID part after the colon
+		for i := len(callback.To) - 1; i >= 0; i-- {
+			if callback.To[i] == ':' {
+				conversationID = callback.To[i+1:]
+				break
+			}
+		}
+	}
+
+	c.pendingMu.RLock()
+	respCh, exists := c.pending[conversationID]
+	c.pendingMu.RUnlock()
+
+	if !exists {
+		c.logger.Warn("Received callback for unknown conversation",
+			zap.String("to", callback.To),
+			zap.String("conversationId", conversationID))
 		return
 	}
 
 	intent := protocol.NewInteractionIntent(
 		protocol.IntentTypeReply,
 		callback.Text,
-		callback.ChatID,
-		callback.ReplyToMessageID,
+		conversationID,
+		callback.ReplyToId,
 	)
+
+	// Add media URL as attachment if present
+	if callback.MediaUrl != "" {
+		intent.Content.Attachments = append(intent.Content.Attachments, protocol.Attachment{
+			Type: "media",
+			URL:  callback.MediaUrl,
+		})
+	}
 
 	select {
 	case respCh <- intent:
 		c.logger.Debug("Callback processed",
-			zap.String("chatId", callback.ChatID))
+			zap.String("conversationId", conversationID))
 	default:
 		c.logger.Warn("Callback channel full",
-			zap.String("chatId", callback.ChatID))
+			zap.String("conversationId", conversationID))
 	}
 }
 
-func (c *MoltbotClient) Close() error {
+func (c *OpenclawClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -507,9 +766,9 @@ func (c *MoltbotClient) Close() error {
 	return nil
 }
 
-func (c *MoltbotClient) Health(ctx context.Context) error {
-	// Check moltbot universal-im health endpoint
-	url := fmt.Sprintf("%s/universal-im/health", c.config.Endpoint)
+func (c *OpenclawClient) Health(ctx context.Context) error {
+	// Check OpenClaw health endpoint
+	url := fmt.Sprintf("%s/health", c.config.Endpoint)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -528,6 +787,17 @@ func (c *MoltbotClient) Health(ctx context.Context) error {
 	return nil
 }
 
+// Helper function to get string from map
+func getString(m map[string]interface{}, key, defaultVal string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return defaultVal
+}
+
+// MoltbotClient is a legacy type alias
+type MoltbotClient = OpenclawClient
+
 // MockClient is a mock implementation for testing and development.
 type MockClient struct {
 	logger   *zap.Logger
@@ -535,7 +805,7 @@ type MockClient struct {
 	response string
 }
 
-// NewMockClient creates a mock Clawdbot client for testing.
+// NewMockClient creates a mock OpenClaw client for testing.
 func NewMockClient(logger *zap.Logger) *MockClient {
 	if logger == nil {
 		logger, _ = zap.NewProduction()
@@ -543,7 +813,7 @@ func NewMockClient(logger *zap.Logger) *MockClient {
 	return &MockClient{
 		logger:   logger,
 		delay:    100 * time.Millisecond,
-		response: "Hello! I'm Clawdbot. I received your message: ",
+		response: "Hello! I'm OpenClaw. I received your message: ",
 	}
 }
 

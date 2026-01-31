@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -20,6 +21,7 @@ import (
 	"github.com/zlc_ai/uip-gateway/internal/clawdbot"
 	"github.com/zlc_ai/uip-gateway/internal/config"
 	"github.com/zlc_ai/uip-gateway/internal/gateway"
+	"github.com/zlc_ai/uip-gateway/internal/transport"
 )
 
 var (
@@ -54,27 +56,33 @@ func main() {
 		zap.String("version", version),
 		zap.String("config", *configPath))
 
-	// Create Clawdbot client
+	// Create OpenClaw client
 	var clawdbotClient clawdbot.Client
-	var moltbotClient *clawdbot.MoltbotClient
+	var openclawClient *clawdbot.OpenclawClient
 
 	if *useMock {
-		logger.Info("Using mock Clawdbot client")
+		logger.Info("Using mock OpenClaw client")
 		clawdbotClient = clawdbot.NewMockClient(logger)
-	} else if cfg.Clawdbot.Mode == "moltbot" {
-		logger.Info("Using Moltbot universal-im client",
+	} else if cfg.Clawdbot.Mode == "openclaw" || cfg.Clawdbot.Mode == "moltbot" {
+		// Support both "openclaw" (new) and "moltbot" (legacy) mode names
+		logger.Info("Using OpenClaw universal-im client",
 			zap.String("endpoint", cfg.Clawdbot.Endpoint),
-			zap.String("endpointId", cfg.Clawdbot.EndpointID))
-		moltbotClient, err = clawdbot.NewMoltbotClient(clawdbot.Config{
+			zap.String("accountId", cfg.Clawdbot.UniversalIM.AccountID),
+			zap.String("transport", cfg.Clawdbot.UniversalIM.Transport))
+		openclawClient, err = clawdbot.NewOpenclawClient(clawdbot.Config{
 			Endpoint:   cfg.Clawdbot.Endpoint,
 			Timeout:    cfg.Clawdbot.Timeout,
 			MaxRetries: cfg.Clawdbot.RetryPolicy.MaxRetries,
 			Insecure:   cfg.Clawdbot.Insecure,
-		}, cfg.Clawdbot.Token, cfg.Clawdbot.EndpointID, logger)
+		}, clawdbot.OpenclawClientConfig{
+			Secret:      cfg.Clawdbot.UniversalIM.Secret,
+			AccountID:   cfg.Clawdbot.UniversalIM.AccountID,
+			WebhookPath: cfg.Clawdbot.UniversalIM.WebhookPath,
+		}, logger)
 		if err != nil {
-			logger.Fatal("Failed to create Moltbot client", zap.Error(err))
+			logger.Fatal("Failed to create OpenClaw client", zap.Error(err))
 		}
-		clawdbotClient = moltbotClient
+		clawdbotClient = openclawClient
 	} else {
 		clawdbotClient, err = clawdbot.NewHTTPClient(clawdbot.Config{
 			Endpoint:   cfg.Clawdbot.Endpoint,
@@ -83,7 +91,7 @@ func main() {
 			Insecure:   cfg.Clawdbot.Insecure,
 		}, logger)
 		if err != nil {
-			logger.Fatal("Failed to create Clawdbot client", zap.Error(err))
+			logger.Fatal("Failed to create OpenClaw client", zap.Error(err))
 		}
 	}
 
@@ -136,7 +144,57 @@ func main() {
 		}
 	}
 
-	// Moltbot callback endpoint - receives responses from Moltbot
+	// OpenClaw outbound endpoint - receives AI responses from OpenClaw Universal IM
+	// This endpoint handles the outbound payload from OpenClaw when AI generates a response
+	mux.HandleFunc("/api/v1/openclaw/outbound", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Validate authorization header if configured
+		if cfg.Clawdbot.UniversalIM.OutboundAuthHeader != "" {
+			authHeader := r.Header.Get("Authorization")
+			if authHeader != cfg.Clawdbot.UniversalIM.OutboundAuthHeader {
+				logger.Warn("Invalid authorization header in outbound request")
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			logger.Error("Failed to read outbound body", zap.Error(err))
+			http.Error(w, "Bad request", http.StatusBadRequest)
+			return
+		}
+
+		var outbound clawdbot.OpenclawOutboundPayload
+		if err := json.Unmarshal(body, &outbound); err != nil {
+			logger.Error("Failed to parse outbound payload", zap.Error(err))
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		logger.Info("Received OpenClaw outbound",
+			zap.String("to", outbound.To),
+			zap.Int("textLen", len(outbound.Text)),
+			zap.String("replyToId", outbound.ReplyToId),
+			zap.String("replyToId", outbound.Text))
+
+		// Forward to OpenClaw client if available
+		if openclawClient != nil {
+			openclawClient.HandleCallback(&outbound)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":        true,
+			"messageId": fmt.Sprintf("outbound-%d", time.Now().UnixMilli()),
+		})
+	})
+
+	// Legacy callback endpoint for backward compatibility
 	mux.HandleFunc("/api/v1/callback", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -150,42 +208,87 @@ func main() {
 			return
 		}
 
-		var callback clawdbot.MoltbotCallbackRequest
-		if err := json.Unmarshal(body, &callback); err != nil {
+		// Try to parse as new OpenClaw format first
+		var outbound clawdbot.OpenclawOutboundPayload
+		if err := json.Unmarshal(body, &outbound); err != nil {
 			logger.Error("Failed to parse callback", zap.Error(err))
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
 			return
 		}
 
-		logger.Info("Received Moltbot callback",
-			zap.String("chatId", callback.ChatID),
-			zap.Int("textLen", len(callback.Text)),
-			zap.String("text", callback.Text))
+		logger.Info("Received callback (legacy endpoint)",
+			zap.String("to", outbound.To),
+			zap.Int("textLen", len(outbound.Text)))
 
-		// Forward to Moltbot client if available
-		if moltbotClient != nil {
-			moltbotClient.HandleCallback(&callback)
+		// Forward to OpenClaw client if available
+		if openclawClient != nil {
+			openclawClient.HandleCallback(&outbound)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"ok": true}`))
 	})
 
+	// Initialize transport servers for OpenClaw connectivity
+	var wsServer *transport.WebSocketServer
+	var pollingServer *transport.PollingServer
+
+	// WebSocket server for OpenClaw WebSocket transport
+	wsServer = transport.NewWebSocketServer(logger)
+	if err := wsServer.Start(ctx); err != nil {
+		logger.Fatal("Failed to start WebSocket server", zap.Error(err))
+	}
+
+	// Polling server for OpenClaw Polling transport
+	pollingServer = transport.NewPollingServer(logger)
+	if err := pollingServer.Start(ctx); err != nil {
+		logger.Fatal("Failed to start Polling server", zap.Error(err))
+	}
+
+	// WebSocket endpoint for OpenClaw to connect to (for websocket transport)
+	mux.Handle("/api/v1/openclaw/ws", wsServer.HTTPHandler())
+	logger.Info("WebSocket endpoint registered", zap.String("path", "/api/v1/openclaw/ws"))
+
+	// Polling endpoint for OpenClaw to poll messages (for polling transport)
+	mux.Handle("/api/v1/openclaw/poll", pollingServer.HTTPHandler())
+	logger.Info("Polling endpoint registered", zap.String("path", "/api/v1/openclaw/poll"))
+
+	// Inbound message endpoint for polling transport
+	mux.Handle("/api/v1/openclaw/inbound", pollingServer.InboundHandler())
+	logger.Info("Inbound endpoint registered", zap.String("path", "/api/v1/openclaw/inbound"))
+
 	// API info endpoint
 	mux.HandleFunc("/api/v1/info", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(fmt.Sprintf(`{
-			"name": "UIP Gateway",
-			"version": "%s",
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"name":     "UIP Gateway",
+			"version":  version,
 			"protocol": "UIP v1.0",
-			"mode": "%s",
-			"endpoints": {
-				"local_message": "%s/message",
-				"local_ws": "%s/ws",
-				"callback": "/api/v1/callback",
-				"health": "/health"
-			}
-		}`, version, cfg.Clawdbot.Mode, cfg.Adapters.Local.HTTPPath, cfg.Adapters.Local.HTTPPath)))
+			"mode":     cfg.Clawdbot.Mode,
+			"openclaw": map[string]interface{}{
+				"endpoint":  cfg.Clawdbot.Endpoint,
+				"accountId": cfg.Clawdbot.UniversalIM.AccountID,
+				"transport": cfg.Clawdbot.UniversalIM.Transport,
+			},
+			"endpoints": map[string]string{
+				"local_message":     cfg.Adapters.Local.HTTPPath + "/message",
+				"local_ws":          cfg.Adapters.Local.HTTPPath + "/ws",
+				"openclaw_outbound": "/api/v1/openclaw/outbound",
+				"openclaw_ws":       "/api/v1/openclaw/ws",
+				"openclaw_poll":     "/api/v1/openclaw/poll",
+				"openclaw_inbound":  "/api/v1/openclaw/inbound",
+				"callback_legacy":   "/api/v1/callback",
+				"health":            "/health",
+			},
+			"transports": map[string]interface{}{
+				"websocket": map[string]interface{}{
+					"connections": wsServer.ConnectionCount(),
+				},
+				"polling": map[string]interface{}{
+					"queueSize": pollingServer.QueueSize(),
+				},
+			},
+		})
 	})
 
 	server := &http.Server{
@@ -221,6 +324,18 @@ func main() {
 	// Shutdown HTTP server
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("HTTP server shutdown error", zap.Error(err))
+	}
+
+	// Stop transport servers
+	if wsServer != nil {
+		if err := wsServer.Stop(shutdownCtx); err != nil {
+			logger.Error("WebSocket server shutdown error", zap.Error(err))
+		}
+	}
+	if pollingServer != nil {
+		if err := pollingServer.Stop(shutdownCtx); err != nil {
+			logger.Error("Polling server shutdown error", zap.Error(err))
+		}
 	}
 
 	// Stop gateway
@@ -274,30 +389,32 @@ func initLogger(level string) *zap.Logger {
 
 func printBanner(cfg *config.Config, logger *zap.Logger) {
 	banner := `
-╔══════════════════════════════════════════════════════════════╗
-║                     UIP Gateway v%s                       ║
-║         Universal Interaction Protocol Gateway               ║
-╠══════════════════════════════════════════════════════════════╣
-║  HTTP Server:    http://localhost:%d                       ║
-║  Local Adapter:  %s                                 ║
-║  Moltbot:        %s                      ║
-║  Mode:           %s                                      ║
-╠══════════════════════════════════════════════════════════════╣
-║  Endpoints:                                                  ║
-║    POST %s/message    - Send message            ║
-║    WS   %s/ws         - WebSocket connection    ║
-║    POST /api/v1/callback           - Moltbot callback        ║
-║    GET  /health                    - Health check            ║
-╚══════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════════╗
+║                     UIP Gateway v%s                           ║
+║         Universal Interaction Protocol Gateway                   ║
+╠══════════════════════════════════════════════════════════════════╣
+║  HTTP Server:    http://localhost:%-5d                          ║
+║  Local Adapter:  %-20s                          ║
+║  OpenClaw:       %-20s                          ║
+║  Account ID:     %-20s                          ║
+║  Transport:      %-20s                          ║
+╠══════════════════════════════════════════════════════════════════╣
+║  Endpoints:                                                      ║
+║    POST %-20s  - Send message                  ║
+║    WS   %-20s  - WebSocket connection          ║
+║    POST /api/v1/openclaw/outbound   - OpenClaw AI response       ║
+║    GET  /health                     - Health check               ║
+╚══════════════════════════════════════════════════════════════════╝
 `
 	fmt.Printf(banner,
 		version,
 		cfg.Server.HTTPPort,
 		padRight(cfg.Adapters.Local.HTTPPath, 20),
 		padRight(cfg.Clawdbot.Endpoint, 20),
-		padRight(cfg.Clawdbot.Mode, 15),
-		padRight(cfg.Adapters.Local.HTTPPath, 12),
-		padRight(cfg.Adapters.Local.HTTPPath, 12),
+		padRight(cfg.Clawdbot.UniversalIM.AccountID, 20),
+		padRight(cfg.Clawdbot.UniversalIM.Transport, 20),
+		padRight(cfg.Adapters.Local.HTTPPath+"/message", 20),
+		padRight(cfg.Adapters.Local.HTTPPath+"/ws", 20),
 	)
 }
 

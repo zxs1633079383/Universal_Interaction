@@ -11,10 +11,10 @@ import (
 
 // Config is the root configuration structure.
 type Config struct {
-	Server       ServerConfig       `yaml:"server"`
-	Clawdbot     ClawdbotConfig     `yaml:"clawdbot"`
-	Adapters     AdaptersConfig     `yaml:"adapters"`
-	Session      SessionConfig      `yaml:"session"`
+	Server        ServerConfig        `yaml:"server"`
+	Clawdbot      ClawdbotConfig      `yaml:"clawdbot"`
+	Adapters      AdaptersConfig      `yaml:"adapters"`
+	Session       SessionConfig       `yaml:"session"`
 	Observability ObservabilityConfig `yaml:"observability"`
 }
 
@@ -28,17 +28,56 @@ type ServerConfig struct {
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
 }
 
-// ClawdbotConfig holds Clawdbot client configuration.
+// ClawdbotConfig holds OpenClaw client configuration.
 type ClawdbotConfig struct {
-	Endpoint    string           `yaml:"endpoint"`
-	Timeout     time.Duration    `yaml:"timeout"`
+	Endpoint    string            `yaml:"endpoint"`
+	Timeout     time.Duration     `yaml:"timeout"`
 	RetryPolicy RetryPolicyConfig `yaml:"retry_policy"`
-	Insecure    bool             `yaml:"insecure"`
-	// Moltbot specific configuration
-	Mode        string           `yaml:"mode"`         // "moltbot" or "legacy"
-	Token       string           `yaml:"token"`        // Auth token for moltbot universal-im
-	EndpointID  string           `yaml:"endpoint_id"`  // Moltbot endpoint ID
-	CallbackURL string           `yaml:"callback_url"` // Our callback URL for moltbot to post responses
+	Insecure    bool              `yaml:"insecure"`
+	// OpenClaw Universal IM configuration
+	Mode        string `yaml:"mode"`         // "openclaw" (universal-im) or "legacy"
+	Token       string `yaml:"token"`        // Legacy: Auth token
+	EndpointID  string `yaml:"endpoint_id"`  // Legacy: Endpoint ID
+	CallbackURL string `yaml:"callback_url"` // Our outbound URL for OpenClaw to post AI responses
+
+	// Universal IM specific configuration
+	UniversalIM UniversalIMConfig `yaml:"universal_im"`
+}
+
+// UniversalIMConfig holds OpenClaw Universal IM specific configuration.
+type UniversalIMConfig struct {
+	// AccountID is the account identifier in OpenClaw config (default: "default")
+	AccountID string `yaml:"account_id"`
+	// WebhookPath is the custom webhook path (default: "/universal-im/{account_id}/webhook")
+	WebhookPath string `yaml:"webhook_path"`
+	// Secret is the webhook secret for X-Webhook-Secret header authentication
+	Secret string `yaml:"secret"`
+	// Transport is the transport type: "webhook", "websocket", or "polling"
+	Transport string `yaml:"transport"`
+	// WebSocket configuration (for transport: websocket)
+	WebSocket WebSocketConfig `yaml:"websocket"`
+	// Polling configuration (for transport: polling)
+	Polling PollingConfig `yaml:"polling"`
+	// OutboundURL is where OpenClaw will POST AI responses (same as callback_url)
+	OutboundURL string `yaml:"outbound_url"`
+	// OutboundAuthHeader is the Authorization header value for outbound requests
+	OutboundAuthHeader string `yaml:"outbound_auth_header"`
+}
+
+// WebSocketConfig holds WebSocket transport configuration.
+type WebSocketConfig struct {
+	// URL is the WebSocket server URL to connect to
+	URL string `yaml:"url"`
+	// ReconnectMs is the reconnection interval in milliseconds
+	ReconnectMs int `yaml:"reconnect_ms"`
+}
+
+// PollingConfig holds Polling transport configuration.
+type PollingConfig struct {
+	// URL is the HTTP endpoint to poll for messages
+	URL string `yaml:"url"`
+	// IntervalMs is the polling interval in milliseconds
+	IntervalMs int `yaml:"interval_ms"`
 }
 
 // RetryPolicyConfig holds retry policy configuration.
@@ -51,9 +90,9 @@ type RetryPolicyConfig struct {
 
 // AdaptersConfig holds adapter configurations.
 type AdaptersConfig struct {
-	Local   LocalAdapterConfig  `yaml:"local"`
-	Slack   SlackAdapterConfig  `yaml:"slack"`
-	WeChat  WeChatAdapterConfig `yaml:"wechat"`
+	Local  LocalAdapterConfig  `yaml:"local"`
+	Slack  SlackAdapterConfig  `yaml:"slack"`
+	WeChat WeChatAdapterConfig `yaml:"wechat"`
 }
 
 // LocalAdapterConfig holds local adapter configuration.
@@ -100,7 +139,7 @@ func DefaultConfig() *Config {
 			ShutdownTimeout: 10 * time.Second,
 		},
 		Clawdbot: ClawdbotConfig{
-			Endpoint: "http://localhost:18789",  // Moltbot default port
+			Endpoint: "http://localhost:18789", // OpenClaw gateway default port
 			Timeout:  30 * time.Second,
 			RetryPolicy: RetryPolicyConfig{
 				MaxRetries:      3,
@@ -109,10 +148,21 @@ func DefaultConfig() *Config {
 				MaxInterval:     5 * time.Second,
 			},
 			Insecure:    true,
-			Mode:        "moltbot",                           // Use moltbot universal-im
-			Token:       "uip-gateway-token",                 // Token for auth
-			EndpointID:  "uip-gateway",                       // Endpoint ID in moltbot config
-			CallbackURL: "http://localhost:8080/api/v1/callback", // Our callback URL
+			Mode:        "openclaw",                                       // Use OpenClaw universal-im
+			CallbackURL: "http://localhost:8080/api/v1/openclaw/outbound", // Our outbound URL
+			UniversalIM: UniversalIMConfig{
+				AccountID:          "default",
+				Transport:          "webhook", // Default to webhook transport
+				Secret:             "",        // Webhook secret (X-Webhook-Secret)
+				OutboundURL:        "http://localhost:8080/api/v1/openclaw/outbound",
+				OutboundAuthHeader: "", // Optional auth header for outbound
+				WebSocket: WebSocketConfig{
+					ReconnectMs: 5000,
+				},
+				Polling: PollingConfig{
+					IntervalMs: 5000,
+				},
+			},
 		},
 		Adapters: AdaptersConfig{
 			Local: LocalAdapterConfig{
@@ -142,7 +192,7 @@ func DefaultConfig() *Config {
 // Load loads configuration from a YAML file.
 func Load(path string) (*Config, error) {
 	cfg := DefaultConfig()
-	
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -150,15 +200,15 @@ func Load(path string) (*Config, error) {
 		}
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
-	
+
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
-	
+
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
-	
+
 	return cfg, nil
 }
 
@@ -167,14 +217,14 @@ func (c *Config) Validate() error {
 	if c.Server.HTTPPort <= 0 || c.Server.HTTPPort > 65535 {
 		return fmt.Errorf("invalid HTTP port: %d", c.Server.HTTPPort)
 	}
-	
+
 	if c.Clawdbot.Endpoint == "" {
 		return fmt.Errorf("clawdbot endpoint is required")
 	}
-	
+
 	if c.Clawdbot.Timeout <= 0 {
 		return fmt.Errorf("clawdbot timeout must be positive")
 	}
-	
+
 	return nil
 }
