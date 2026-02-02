@@ -180,18 +180,44 @@ func main() {
 			zap.String("to", outbound.To),
 			zap.Int("textLen", len(outbound.Text)),
 			zap.String("replyToId", outbound.ReplyToId),
-			zap.String("replyToId", outbound.Text))
+			zap.String("text", outbound.Text))
 
-		// Forward to OpenClaw client if available
+		// Forward to OpenClaw client and get routing information
+		var outboundResp *clawdbot.OutboundResponse
 		if openclawClient != nil {
-			openclawClient.HandleCallback(&outbound)
+			outboundResp = openclawClient.HandleCallback(&outbound)
+		}
+
+		// Build response with routing information for external IM
+		response := map[string]interface{}{
+			"ok":        true,
+			"messageId": fmt.Sprintf("outbound-%d", time.Now().UnixMilli()),
+			"to":        outbound.To,
+			"text":      outbound.Text,
+		}
+
+		// Include routing information if available
+		if outboundResp != nil {
+			response["routing"] = map[string]interface{}{
+				"channelId": outboundResp.ChannelID,
+				"userId":    outboundResp.UserID,
+				"sessionId": outboundResp.SessionID,
+			}
+			logger.Info("Outbound with routing info",
+				zap.String("channelId", outboundResp.ChannelID),
+				zap.String("userId", outboundResp.UserID),
+				zap.String("sessionId", outboundResp.SessionID))
+		}
+
+		if outbound.MediaUrl != "" {
+			response["mediaUrl"] = outbound.MediaUrl
+		}
+		if outbound.ThreadId != "" {
+			response["threadId"] = outbound.ThreadId
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"ok":        true,
-			"messageId": fmt.Sprintf("outbound-%d", time.Now().UnixMilli()),
-		})
+		json.NewEncoder(w).Encode(response)
 	})
 
 	// Legacy callback endpoint for backward compatibility

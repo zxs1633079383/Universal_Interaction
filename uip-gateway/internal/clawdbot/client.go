@@ -325,6 +325,14 @@ func (c *HTTPClient) Health(ctx context.Context) error {
 	return nil
 }
 
+// PendingContext stores context for pending requests
+type PendingContext struct {
+	ResponseCh chan *protocol.InteractionIntent
+	ChannelID  string // External IM channel ID for routing
+	UserID     string // Original user ID
+	SessionID  string // Original session ID
+}
+
 // OpenclawClient implements the Client interface for OpenClaw's universal-im plugin.
 // This client sends messages to the /universal-im/{accountId}/webhook endpoint.
 type OpenclawClient struct {
@@ -337,9 +345,32 @@ type OpenclawClient struct {
 	mu          sync.RWMutex
 	closed      bool
 
-	// Pending responses - key is conversation_id
+	// Pending responses - key is conversation_id (for sync mode)
 	pendingMu sync.RWMutex
-	pending   map[string]chan *protocol.InteractionIntent
+	pending   map[string]*PendingContext
+
+	// Session context store - key is sessionId (for async webhook mode)
+	// This stores routing info for longer periods to handle async callbacks
+	sessionCtxMu sync.RWMutex
+	sessionCtx   map[string]*PendingContext
+
+	// Outbound callback function for external IM routing
+	outboundCallback OutboundCallback
+}
+
+// OutboundCallback is called when AI response is received for routing to external IM
+type OutboundCallback func(response *OutboundResponse)
+
+// OutboundResponse contains the AI response with routing information
+type OutboundResponse struct {
+	To        string `json:"to"`        // Target in format "user:userId" or "channel:channelId"
+	Text      string `json:"text"`      // AI response text
+	MediaUrl  string `json:"mediaUrl"`  // Optional media attachment
+	ReplyToId string `json:"replyToId"` // Original message ID
+	ThreadId  string `json:"threadId"`  // Thread ID for threaded conversations
+	ChannelID string `json:"channelId"` // External IM channel ID for routing
+	UserID    string `json:"userId"`    // Original user ID
+	SessionID string `json:"sessionId"` // Original session ID
 }
 
 // OpenclawClientConfig holds additional configuration for OpenclawClient
@@ -369,8 +400,37 @@ func NewOpenclawClient(config Config, opts OpenclawClientConfig, logger *zap.Log
 		secret:      opts.Secret,
 		accountID:   accountID,
 		webhookPath: opts.WebhookPath,
-		pending:     make(map[string]chan *protocol.InteractionIntent),
+		pending:     make(map[string]*PendingContext),
+		sessionCtx:  make(map[string]*PendingContext),
 	}, nil
+}
+
+// SetOutboundCallback sets the callback for routing AI responses to external IM
+func (c *OpenclawClient) SetOutboundCallback(callback OutboundCallback) {
+	c.outboundCallback = callback
+}
+
+// ClearSessionContext clears a specific session context (call after processing outbound)
+func (c *OpenclawClient) ClearSessionContext(sessionID string) {
+	c.sessionCtxMu.Lock()
+	defer c.sessionCtxMu.Unlock()
+
+	if ctx, exists := c.sessionCtx[sessionID]; exists {
+		// Also remove by userId if it points to the same context
+		for key, val := range c.sessionCtx {
+			if val == ctx && key != sessionID {
+				delete(c.sessionCtx, key)
+			}
+		}
+		delete(c.sessionCtx, sessionID)
+	}
+}
+
+// GetSessionContext returns the routing context for a session
+func (c *OpenclawClient) GetSessionContext(sessionID string) *PendingContext {
+	c.sessionCtxMu.RLock()
+	defer c.sessionCtxMu.RUnlock()
+	return c.sessionCtx[sessionID]
 }
 
 // NewMoltbotClient is a legacy alias for NewOpenclawClient
@@ -421,6 +481,14 @@ func (c *OpenclawClient) ProcessEvent(ctx context.Context, event *protocol.Canon
 		}
 	}
 
+	// Extract channelId from payload if provided
+	channelID := ""
+	if payload := event.Input.Payload; payload != nil {
+		if cid, ok := payload["channelId"].(string); ok {
+			channelID = cid
+		}
+	}
+
 	// Build OpenClaw universal-im request (Custom Provider format)
 	req := OpenclawUniversalIMRequest{
 		MessageID: event.InteractionID,
@@ -438,20 +506,34 @@ func (c *OpenclawClient) ProcessEvent(ctx context.Context, event *protocol.Canon
 		Meta: map[string]interface{}{
 			"traceId":      event.Meta.TraceID,
 			"capabilities": event.Capabilities,
+			"channelId":    channelID, // Include channelId in meta for tracking
 		},
 	}
 
-	// Create pending response channel for synchronous response
+	// Create pending response context with channelId for routing
 	conversationKey := event.Session.ExternalSessionID
-	respCh := make(chan *protocol.InteractionIntent, 1)
+	pendingCtx := &PendingContext{
+		ResponseCh: make(chan *protocol.InteractionIntent, 1),
+		ChannelID:  channelID,
+		UserID:     event.Session.UserID,
+		SessionID:  event.Session.ExternalSessionID,
+	}
 	c.pendingMu.Lock()
-	c.pending[conversationKey] = respCh
+	c.pending[conversationKey] = pendingCtx
 	c.pendingMu.Unlock()
+
+	// Also store in sessionCtx for async webhook mode (keyed by both sessionId and userId)
+	// This allows outbound callbacks to find routing info even after sync timeout
+	c.sessionCtxMu.Lock()
+	c.sessionCtx[conversationKey] = pendingCtx
+	c.sessionCtx[event.Session.UserID] = pendingCtx // Also key by userId for "user:xxx" format
+	c.sessionCtxMu.Unlock()
 
 	defer func() {
 		c.pendingMu.Lock()
 		delete(c.pending, conversationKey)
 		c.pendingMu.Unlock()
+		// Note: We don't delete from sessionCtx immediately - let it persist for async callbacks
 	}()
 
 	// Execute with retry
@@ -483,7 +565,7 @@ func (c *OpenclawClient) ProcessEvent(ctx context.Context, event *protocol.Canon
 
 	// Chat Completions API is synchronous, so the response should already be in the channel
 	select {
-	case intent := <-respCh:
+	case intent := <-pendingCtx.ResponseCh:
 		return intent, nil
 	case <-time.After(100 * time.Millisecond):
 		// If no response in channel, something went wrong
@@ -679,7 +761,7 @@ func (c *OpenclawClient) sendViaChatCompletions(ctx context.Context, req Opencla
 // deliverResponse delivers the AI response to the pending channel.
 func (c *OpenclawClient) deliverResponse(conversationID, text, replyToID string) {
 	c.pendingMu.RLock()
-	respCh, exists := c.pending[conversationID]
+	pendingCtx, exists := c.pending[conversationID]
 	c.pendingMu.RUnlock()
 
 	if !exists {
@@ -696,7 +778,7 @@ func (c *OpenclawClient) deliverResponse(conversationID, text, replyToID string)
 	)
 
 	select {
-	case respCh <- intent:
+	case pendingCtx.ResponseCh <- intent:
 		c.logger.Debug("Response delivered",
 			zap.String("conversationId", conversationID))
 	default:
@@ -707,54 +789,95 @@ func (c *OpenclawClient) deliverResponse(conversationID, text, replyToID string)
 
 // HandleCallback processes the callback from OpenClaw.
 // This should be called when OpenClaw posts to our outbound URL.
-func (c *OpenclawClient) HandleCallback(callback *OpenclawOutboundPayload) {
+// Returns the OutboundResponse with routing information for external IM.
+func (c *OpenclawClient) HandleCallback(callback *OpenclawOutboundPayload) *OutboundResponse {
 	// Parse the "to" field to extract conversation ID
 	// Format: "user:userId" or "channel:channelId" or "group:groupId"
 	conversationID := callback.To
+	toType := ""
 	if len(callback.To) > 0 {
 		// Extract the ID part after the colon
-		for i := len(callback.To) - 1; i >= 0; i-- {
+		for i := 0; i < len(callback.To); i++ {
 			if callback.To[i] == ':' {
+				toType = callback.To[:i]
 				conversationID = callback.To[i+1:]
 				break
 			}
 		}
 	}
 
+	// Build outbound response with routing information
+	outboundResp := &OutboundResponse{
+		To:        callback.To,
+		Text:      callback.Text,
+		MediaUrl:  callback.MediaUrl,
+		ReplyToId: callback.ReplyToId,
+		ThreadId:  callback.ThreadId,
+	}
+
+	// Try to find pending context (sync mode)
 	c.pendingMu.RLock()
-	respCh, exists := c.pending[conversationID]
+	pendingCtx, exists := c.pending[conversationID]
 	c.pendingMu.RUnlock()
 
+	// If not found in pending, try sessionCtx (async webhook mode)
 	if !exists {
-		c.logger.Warn("Received callback for unknown conversation",
+		c.sessionCtxMu.RLock()
+		pendingCtx, exists = c.sessionCtx[conversationID]
+		c.sessionCtxMu.RUnlock()
+	}
+
+	if exists {
+		// Fill in routing information from context
+		outboundResp.ChannelID = pendingCtx.ChannelID
+		outboundResp.UserID = pendingCtx.UserID
+		outboundResp.SessionID = pendingCtx.SessionID
+
+		intent := protocol.NewInteractionIntent(
+			protocol.IntentTypeReply,
+			callback.Text,
+			conversationID,
+			callback.ReplyToId,
+		)
+
+		// Add media URL as attachment if present
+		if callback.MediaUrl != "" {
+			intent.Content.Attachments = append(intent.Content.Attachments, protocol.Attachment{
+				Type: "media",
+				URL:  callback.MediaUrl,
+			})
+		}
+
+		select {
+		case pendingCtx.ResponseCh <- intent:
+			c.logger.Debug("Callback processed",
+				zap.String("conversationId", conversationID),
+				zap.String("channelId", pendingCtx.ChannelID))
+		default:
+			// Channel might be full or closed (webhook async mode)
+			c.logger.Debug("Callback response channel not available (async mode)",
+				zap.String("conversationId", conversationID))
+		}
+
+		c.logger.Info("Outbound callback with routing",
+			zap.String("to", callback.To),
+			zap.String("toType", toType),
+			zap.String("conversationId", conversationID),
+			zap.String("channelId", pendingCtx.ChannelID),
+			zap.String("userId", pendingCtx.UserID),
+			zap.String("sessionId", pendingCtx.SessionID))
+	} else {
+		c.logger.Warn("Received callback for unknown conversation (no routing info)",
 			zap.String("to", callback.To),
 			zap.String("conversationId", conversationID))
-		return
 	}
 
-	intent := protocol.NewInteractionIntent(
-		protocol.IntentTypeReply,
-		callback.Text,
-		conversationID,
-		callback.ReplyToId,
-	)
-
-	// Add media URL as attachment if present
-	if callback.MediaUrl != "" {
-		intent.Content.Attachments = append(intent.Content.Attachments, protocol.Attachment{
-			Type: "media",
-			URL:  callback.MediaUrl,
-		})
+	// Call the outbound callback if set
+	if c.outboundCallback != nil {
+		c.outboundCallback(outboundResp)
 	}
 
-	select {
-	case respCh <- intent:
-		c.logger.Debug("Callback processed",
-			zap.String("conversationId", conversationID))
-	default:
-		c.logger.Warn("Callback channel full",
-			zap.String("conversationId", conversationID))
-	}
+	return outboundResp
 }
 
 func (c *OpenclawClient) Close() error {
