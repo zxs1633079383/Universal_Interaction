@@ -16,6 +16,8 @@ type Config struct {
 	Adapters      AdaptersConfig      `yaml:"adapters"`
 	Session       SessionConfig       `yaml:"session"`
 	Observability ObservabilityConfig `yaml:"observability"`
+	// IMWebhook is the configuration for notifying external IM systems
+	IMWebhook IMWebhookConfig `yaml:"im_webhook"`
 }
 
 // ServerConfig holds HTTP server configuration.
@@ -99,6 +101,20 @@ type AdaptersConfig struct {
 type LocalAdapterConfig struct {
 	Enabled  bool   `yaml:"enabled"`
 	HTTPPath string `yaml:"http_path"`
+}
+
+// IMWebhookConfig holds the configuration for notifying external IM systems.
+type IMWebhookConfig struct {
+	// Enabled enables webhook notifications to external IM
+	Enabled bool `yaml:"enabled"`
+	// URL is the webhook URL of your external IM system
+	URL string `yaml:"url"`
+	// AuthHeader is the Authorization header value (e.g., "Bearer xxx")
+	AuthHeader string `yaml:"auth_header"`
+	// Timeout is the request timeout
+	Timeout time.Duration `yaml:"timeout"`
+	// RetryCount is the number of retry attempts
+	RetryCount int `yaml:"retry_count"`
 }
 
 // SlackAdapterConfig holds Slack adapter configuration.
@@ -185,6 +201,13 @@ func DefaultConfig() *Config {
 			Tracing:     true,
 			MetricsPort: 9091,
 			LogLevel:    "info",
+		},
+		IMWebhook: IMWebhookConfig{
+			Enabled:    false, // Disabled by default
+			URL:        "",    // Must be configured by user
+			AuthHeader: "",
+			Timeout:    10 * time.Second,
+			RetryCount: 3,
 		},
 	}
 }

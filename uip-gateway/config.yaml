@@ -93,6 +93,30 @@ observability:
   log_level: "info"
 
 # ============================================================================
+# IM Webhook Configuration - Forward AI responses to your external IM system
+# ============================================================================
+im_webhook:
+  # Enable webhook notifications to external IM
+  enabled: true
+  # Your external IM system's webhook URL
+  # Gateway will POST AI responses to this URL
+  url: "http://196.168.1.177:8065/api/cses/posts/botCallback"
+  # Example URLs:
+  # url: "http://localhost:3000/api/ai-response"      # Local dev
+  # url: "https://your-im-server.com/webhook/ai"     # Production
+  # url: "https://slack.com/api/chat.postMessage"    # Slack (needs proper format)
+  
+  # Authorization header (optional)
+  # auth_header: "Bearer your-token-here"
+  auth_header: ""
+  
+  # Request timeout
+  timeout: 10s
+  
+  # Retry count for failed requests
+  retry_count: 3
+
+# ============================================================================
 # OpenClaw Universal IM Integration Guide
 # ============================================================================
 #

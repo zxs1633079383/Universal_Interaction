@@ -1,947 +1,369 @@
-# UIP Gateway 集成指南
+# UIP Gateway 接入指南
 
-> ✅ **状态**: 已验证可用 (2026-01-30)
-> 
-> UIP Gateway 与 Moltbot 的完整通信链路已成功打通：
-> - Gateway 可以正确发送消息到 Moltbot
-> - Moltbot AI 可以正常处理并生成响应  
-> - Moltbot 可以通过回调将响应发送回 Gateway
+本文档描述外部 IM 系统如何接入 UIP Gateway，实现与 OpenClaw AI 的端到端通信。
 
-**文档版本**: 2.0  
-**最后更新**: 2026-01-30  
-**作者**: Clawdbot Architecture Group
+## 一、架构概览
+
+```
+┌─────────────────┐                    ┌─────────────────┐                    ┌─────────────────┐
+│                 │  1. POST /message  │                 │  2. Webhook        │                 │
+│   外部 IM 系统   │ ─────────────────► │   UIP Gateway   │ ─────────────────► │    OpenClaw     │
+│  (Slack/飞书等)  │                    │   :8080         │                    │    AI Engine    │
+│                 │  4. Webhook推送    │                 │  3. AI Response    │                 │
+│                 │ ◄───────────────── │                 │ ◄───────────────── │                 │
+└─────────────────┘                    └─────────────────┘                    └─────────────────┘
+     你的 IM                                                                     
+     服务器                                                                    
+```
+
+### 消息流程
+
+1. **Inbound (用户 → AI)**：外部 IM 发送消息到 Gateway 的 `/api/v1/local/message`
+2. **Gateway → OpenClaw**：Gateway 转发消息到 OpenClaw Universal IM 插件
+3. **AI 处理**：OpenClaw AI 引擎处理消息并生成响应
+4. **Outbound (AI → 用户)**：Gateway 将 AI 响应推送到外部 IM 的 webhook
 
 ---
 
-## 1. 概述
+## 二、配置 Gateway
 
-### 1.1 我们做了什么
+### 2.1 基础配置
 
-我们实现了一个 **UIP Gateway (Universal Interaction Protocol Gateway)**，这是一个高性能、独立运行的交互网关，作为所有 IM 系统与 **Moltbot** 之间的桥梁。
+编辑 `config.yaml`：
 
-Gateway 使用 Moltbot 的 **universal-im** 插件进行通信，这是 Moltbot 官方提供的通用 IM 接入方式。
+```yaml
+server:
+  http_port: 8080
+  read_timeout: 30s
+  write_timeout: 30s
 
+clawdbot:
+  endpoint: "http://localhost:18789"  # OpenClaw Gateway 地址
+  timeout: 30s
+  mode: "openclaw"
+  universal_im:
+    account_id: "default"
+    transport: "webhook"
+
+adapters:
+  local:
+    enabled: true
+    http_path: "/api/v1/local"
 ```
-┌─────────────┐                    ┌─────────────┐                    ┌─────────────┐
-│   您的 IM   │  ───HTTP/WS────▶  │ UIP Gateway │  ──universal-im──▶│   Moltbot   │
-│    系统     │  ◀───Intent────   │   (Go)      │  ◀───callback────  │  (Gateway)  │
-└─────────────┘                    └─────────────┘                    └─────────────┘
+
+### 2.2 启用 IM Webhook（关键配置）
+
+为了让 Gateway 主动将 AI 响应推送到你的 IM 系统，需要配置 `im_webhook`：
+
+```yaml
+# IM webhook - AI 响应会主动推送到这里
+im_webhook:
+  enabled: true
+  url: "http://your-im-server:3000/api/ai-response"  # 你的 IM 系统接收地址
+  auth_header: "Bearer your-secret-token"            # 可选：认证 header
+  timeout: 10s
+  retry_count: 3
 ```
-
-### 1.2 核心价值
-
-| 特性 | 说明 |
-|------|------|
-| **IM 无关性** | Gateway 抽象了所有 IM 差异，Clawdbot 只需要处理统一的 UIP 协议 |
-| **独立进程** | Gateway 作为独立服务运行，不依赖任何 agent |
-| **双向通信** | 支持同步请求-响应和异步 WebSocket 推送 |
-| **可扩展** | 插件化适配器架构，可轻松添加新 IM 平台 |
 
 ---
 
-## 2. 系统架构
+## 三、Inbound API - 发送消息到 Gateway
 
-### 2.1 完整数据流
+### 3.1 接口说明
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              数据流向                                        │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  [用户 IM 消息]                                                              │
-│       │                                                                      │
-│       ▼                                                                      │
-│  ┌─────────────┐                                                            │
-│  │  IM 系统    │  (微信/Slack/Discord/自定义)                               │
-│  └─────────────┘                                                            │
-│       │                                                                      │
-│       │ HTTP POST / WebSocket                                               │
-│       ▼                                                                      │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                        UIP Gateway                                   │   │
-│  │  ┌─────────────┐   ┌────────────────┐   ┌──────────────────────┐   │   │
-│  │  │ IM Adapter  │──▶│ Gateway Core   │──▶│ Clawdbot Client      │   │   │
-│  │  │ (Local)     │   │ (事件处理队列) │   │ (HTTP/gRPC)          │   │   │
-│  │  └─────────────┘   └────────────────┘   └──────────────────────┘   │   │
-│  │       ▲                    │                       │                │   │
-│  │       │                    │                       │                │   │
-│  │       │     Intent         │                       │                │   │
-│  │       └────────────────────┘                       │                │   │
-│  └────────────────────────────────────────────────────│────────────────┘   │
-│                                                       │                     │
-│       │ HTTP POST (标准 API)                          │                     │
-│       ▼                                               │                     │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                        Clawdbot (moltbot)                            │   │
-│  │  ┌─────────────┐   ┌────────────────┐   ┌──────────────────────┐   │   │
-│  │  │ API 入口    │──▶│ Agent 处理逻辑 │──▶│ LLM / Tools          │   │   │
-│  │  │ /api/v1/chat│   │                │   │                      │   │   │
-│  │  └─────────────┘   └────────────────┘   └──────────────────────┘   │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│       │                                                                      │
-│       │ JSON Response                                                        │
-│       ▼                                                                      │
-│  [返回给 Gateway] ──▶ [转换为 Intent] ──▶ [推送给 IM 系统]                  │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+| 项目 | 值 |
+|------|-----|
+| **URL** | `POST /api/v1/local/message` |
+| **Content-Type** | `application/json` |
 
-### 2.2 组件职责
+### 3.2 请求参数
 
-| 组件 | 职责 | 位置 |
-|------|------|------|
-| **IM 系统** | 接收用户消息，展示 AI 响应 | 您的系统 |
-| **UIP Gateway** | 协议转换，路由，会话管理 | `uip-gateway/` |
-| **Clawdbot** | AI 决策，生成响应 | moltbot 源码 |
-
----
-
-## 3. API 规范
-
-### 3.1 Gateway 对外接口 (IM 系统 → Gateway)
-
-#### 3.1.1 HTTP 消息接口
-
-**端点**: `POST http://gateway:8080/api/v1/local/message`
-
-**请求体**:
-```json
-{
-  "sessionId": "user-session-001",
-  "userId": "user-12345",
-  "text": "你好，请帮我写一段代码",
-  "type": "text"
-}
-```
-
-**字段说明**:
-| 字段 | 类型 | 必填 | 说明 |
+| 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `sessionId` | string | 是 | 会话ID，用于保持对话上下文 |
-| `userId` | string | 是 | 用户唯一标识 |
-| `text` | string | 是 | 用户消息内容 |
-| `type` | string | 否 | 消息类型: `text`(默认), `command`, `event` |
+| `sessionId` | string | 是 | 会话 ID，用于追踪对话上下文 |
+| `userId` | string | 是 | 发送者用户 ID |
+| `text` | string | 是 | 消息文本内容 |
+| `channelId` | string | 否 | **外部 IM 的频道/群聊 ID**，用于路由 AI 响应 |
+| `conversationType` | string | 否 | 对话类型：`direct`(私聊)、`group`(群组)、`channel`(频道) |
+| `type` | string | 否 | 输入类型：`text`(默认)、`command`、`event` |
 
-**响应**:
+### 3.3 请求示例
+
+```bash
+curl -X POST http://localhost:8080/api/v1/local/message \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sessionId": "my-session",
+    "userId": "user123",
+    "channelId": "slack-C12345678",
+    "conversationType": "channel",
+    "text": "你好 早上好"
+  }'
+```
+
+### 3.4 响应示例
+
+**成功响应：**
 ```json
 {
   "success": true
 }
 ```
 
-> ⚠️ **注意**: HTTP 接口是异步的，响应只表示消息已接收。实际的 AI 响应会通过 WebSocket 推送。
-
-#### 3.1.2 WebSocket 实时通信
-
-**端点**: `ws://gateway:8080/api/v1/local/ws?sessionId=xxx&userId=xxx`
-
-**连接参数**:
-| 参数 | 说明 |
-|------|------|
-| `sessionId` | 会话ID |
-| `userId` | 用户ID |
-
-**发送消息格式**:
+**错误响应：**
 ```json
 {
-  "text": "你好，请帮我写一段代码",
-  "type": "text"
-}
-```
-
-**接收响应格式 (Interaction Intent)**:
-```json
-{
-  "intentId": "intent-uuid-001",
-  "intentType": "reply",
-  "content": {
-    "text": "好的，我来帮你写一段代码..."
-  },
-  "targetSessionId": "user-session-001",
-  "inReplyTo": "interaction-uuid-001"
-}
-```
-
-### 3.2 Gateway → Moltbot 接口 (universal-im)
-
-#### 3.2.1 发送消息到 Moltbot
-
-**端点**: `POST http://moltbot:18789/universal-im/webhook/:endpointId`
-
-**请求头**:
-```
-Content-Type: application/json
-Authorization: Bearer <token>
-```
-
-**请求体**:
-```json
-{
-  "message_id": "interaction-uuid-001",
-  "text": "你好，请帮我写一段代码",
-  "from": {
-    "id": "user-12345",
-    "name": "用户名"
-  },
-  "chat": {
-    "id": "session-001",
-    "type": "private"
+  "success": false,
+  "error": {
+    "code": "PROTOCOL_ERROR",
+    "message": "Invalid request body"
   }
 }
 ```
 
-**字段说明**:
+---
+
+## 四、Outbound Webhook - 接收 AI 响应
+
+当 AI 生成响应后，Gateway 会将消息推送到你配置的 `im_webhook.url`。
+
+### 4.1 Webhook 请求格式
+
+Gateway 会 POST 以下 JSON 到你的 IM 服务器：
+
+```json
+{
+  "messageId": "ai-resp-1234567890123",
+  "timestamp": 1769999761644,
+  "to": "user:user123",
+  "text": "你好！早上好！有什么我可以帮助你的吗？",
+  "mediaUrl": "",
+  "replyToId": "msg-001",
+  "threadId": "",
+  "routing": {
+    "channelId": "slack-C12345678",
+    "userId": "user123",
+    "sessionId": "my-session"
+  }
+}
+```
+
+### 4.2 字段说明
+
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `message_id` | string | 消息唯一ID |
-| `text` | string | 用户消息 |
-| `from.id` | string | 发送者ID |
-| `from.name` | string | 发送者名称 |
-| `chat.id` | string | 会话ID (用于上下文管理) |
-| `chat.type` | string | `private` 或 `group` |
+| `messageId` | string | AI 响应的唯一 ID |
+| `timestamp` | number | Unix 时间戳（毫秒） |
+| `to` | string | 目标格式：`user:{userId}` 或 `channel:{channelId}` |
+| `text` | string | AI 响应文本 |
+| `mediaUrl` | string | 可选：媒体附件 URL |
+| `replyToId` | string | 可选：回复的原始消息 ID |
+| `threadId` | string | 可选：线程 ID（用于线程回复） |
+| `routing` | object | **路由信息（重要！）** |
+| `routing.channelId` | string | **外部 IM 频道 ID** - 告诉你该发到哪个频道 |
+| `routing.userId` | string | 原始发送者用户 ID |
+| `routing.sessionId` | string | 会话 ID |
 
-**即时响应** (消息已接收):
-```json
-{
-  "ok": true,
-  "messageId": "interaction-uuid-001",
-  "replied": false,
-  "elapsed": 50
-}
-```
+### 4.3 你的 IM 服务器实现示例
 
-#### 3.2.2 Moltbot 回调 (异步响应)
+**Python Flask 示例：**
 
-Moltbot 处理完消息后，会 POST 到 Gateway 的 callback URL：
-
-**端点**: `POST http://gateway:8080/api/v1/callback`
-
-**请求体**:
-```json
-{
-  "chat_id": "session-001",
-  "text": "好的，我来帮你写一段 Python 代码:\n\n```python\nprint('Hello, World!')\n```",
-  "reply_to_message_id": "interaction-uuid-001"
-}
-```
-
-**字段说明**:
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `chat_id` | string | 目标会话ID |
-| `text` | string | AI 生成的响应 |
-| `reply_to_message_id` | string | 回复的原始消息ID |
-| `media_url` | string | (可选) 媒体附件URL |
-
-#### 3.2.3 健康检查
-
-**端点**: `GET http://moltbot:18789/universal-im/health`
-
-**响应**:
-```json
-{
-  "ok": true,
-  "plugin": "universal-im",
-  "endpoints": {
-    "total": 1,
-    "enabled": 1
-  }
-}
-```
-
----
-
-## 4. Moltbot 配置
-
-UIP Gateway 使用 Moltbot 的 **universal-im** 插件进行通信。以下是配置步骤：
-
-### 4.1 启用 universal-im 插件
-
-```bash
-# 启用插件
-pnpm openclaw plugins enable universal-im
-```
-
-### 4.2 配置 universal-im 端点
-
-编辑 Moltbot 配置文件 (`~/.clawdbot/config.json`)，添加 UIP Gateway 端点：
-
-```jsonc
-{
-  "channels": {
-    "universal-im": {
-      "enabled": true,
-      "endpoints": {
-        "uip-gateway": {
-          "token": "uip-gateway-token",
-          "callbackUrl": "http://localhost:8080/api/v1/callback",
-          "name": "UIP Gateway",
-          "enabled": true,
-          "dmPolicy": "open"
-        }
-      }
-    }
-  }
-}
-```
-
-**配置说明**:
-
-| 字段 | 说明 |
-|------|------|
-| `token` | 认证 token，必须与 Gateway 配置中的 `clawdbot.token` 一致 |
-| `callbackUrl` | Gateway 的回调地址，Moltbot 会将响应 POST 到这里 |
-| `name` | 端点显示名称 |
-| `dmPolicy` | 权限策略: `open`(开放), `pairing`(需配对), `allowlist`(白名单) |
-
-### 4.3 重启 Moltbot Gateway
-
-```bash
-# 重启 gateway
-pnpm openclaw gateway stop && sleep 2 && pnpm openclaw gateway run
-
-# 或使用
-pnpm openclaw gateway restart
-```
-
-### 4.4 验证配置
-
-```bash
-# 查看 channels 状态
-pnpm openclaw channels status
-
-# 检查 universal-im 健康状态
-curl http://localhost:18789/universal-im/health
-```
-
-**预期输出**:
-```json
-{
-  "ok": true,
-  "plugin": "universal-im",
-  "endpoints": {
-    "total": 1,
-    "enabled": 1
-  }
-}
-```
-
----
-
-## 5. 对接调试步骤
-
-### 5.1 第一步：启动 Gateway (Mock 模式)
-
-首先在不连接 Moltbot 的情况下测试 Gateway：
-
-```bash
-cd uip-gateway
-
-# 构建
-make build
-
-# Mock 模式启动 (内置模拟响应)
-./bin/uip-gateway -mock -config config.yaml
-```
-
-**验证**:
-```bash
-# 健康检查
-curl http://localhost:8080/health
-
-# 发送测试消息
-curl -X POST http://localhost:8080/api/v1/local/message \
-  -H "Content-Type: application/json" \
-  -d '{"sessionId": "test", "userId": "user1", "text": "Hello"}'
-```
-
-### 5.2 第二步：配置并启动 Moltbot
-
-**5.2.1 编辑 Moltbot 配置**
-
-创建或编辑 `~/.clawdbot/config.json`：
-
-```bash
-# 如果文件不存在，可以通过 CLI 设置
-pnpm openclaw config set channels.universal-im.enabled true
-pnpm openclaw config set channels.universal-im.endpoints.uip-gateway.token "uip-gateway-token"
-pnpm openclaw config set channels.universal-im.endpoints.uip-gateway.callbackUrl "http://localhost:8080/api/v1/callback"
-```
-
-或者直接编辑配置文件：
-
-```json
-{
-  "channels": {
-    "universal-im": {
-      "enabled": true,
-      "endpoints": {
-        "uip-gateway": {
-          "token": "uip-gateway-token",
-          "callbackUrl": "http://localhost:8080/api/v1/callback",
-          "enabled": true,
-          "dmPolicy": "open"
-        }
-      }
-    }
-  }
-}
-```
-
-**5.2.2 启用插件并启动 Gateway**
-
-```bash
-# 启用 universal-im 插件
-pnpm openclaw plugins enable universal-im
-
-# 启动 moltbot gateway
-pnpm openclaw gateway run
-```
-
-**5.2.3 验证 Moltbot**
-
-```bash
-# 查看 channel 状态
-pnpm openclaw channels status
-
-# 检查 universal-im 健康
-curl http://localhost:18789/universal-im/health
-
-# 直接测试 universal-im webhook
-curl -X POST http://localhost:18789/universal-im/webhook/uip-gateway \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer uip-gateway-token" \
-  -d '{
-    "message_id": "test-001",
-    "text": "你好",
-    "from": {"id": "user1", "name": "测试用户"},
-    "chat": {"id": "chat1", "type": "private"}
-  }'
-```
-
-### 5.3 第三步：配置并启动 UIP Gateway
-
-**5.3.1 编辑 Gateway 配置** (`config.yaml`)：
-
-```yaml
-server:
-  http_port: 8080
-
-clawdbot:
-  endpoint: "http://localhost:18789"  # Moltbot 默认端口
-  timeout: 30s
-  mode: "moltbot"
-  token: "uip-gateway-token"          # 必须与 Moltbot 配置一致
-  endpoint_id: "uip-gateway"
-  callback_url: "http://localhost:8080/api/v1/callback"
-```
-
-**5.3.2 启动 Gateway**
-
-```bash
-./bin/uip-gateway -config config.yaml
-```
-
-### 5.4 第四步：端到端测试
-
-```bash
-# 通过 Gateway 发送消息给 Moltbot
-curl -X POST http://localhost:8080/api/v1/local/message \
-  -H "Content-Type: application/json" \
-  -d '{
-    "sessionId": "e2e-test-001",
-    "userId": "test-user",
-    "text": "你好，请介绍一下你自己"
-  }'
-```
-
-**完整消息流程**:
-```
-1. curl → Gateway (/api/v1/local/message)
-2. Gateway → Moltbot (/universal-im/webhook/uip-gateway)
-3. Moltbot 处理消息 (Agent/LLM)
-4. Moltbot → Gateway (/api/v1/callback)
-5. Gateway → 您的 IM 系统 (WebSocket/HTTP)
-```
-
----
-
-## 6. 您的 IM 系统如何接入
-
-### 6.1 方案一：HTTP 轮询 (简单)
-
-```
-[IM 系统] ─POST─▶ [Gateway] ─▶ [Clawdbot]
-                      │
-                      │ (存储响应到队列)
-                      ▼
-[IM 系统] ◀─GET──  [响应队列]
-```
-
-**代码示例**:
 ```python
-import requests
-import time
+from flask import Flask, request, jsonify
+import slack_sdk
 
-GATEWAY_URL = "http://localhost:8080"
+app = Flask(__name__)
+slack_client = slack_sdk.WebClient(token="xoxb-your-token")
 
-def send_message(session_id, user_id, text):
-    """发送消息到 Gateway"""
-    response = requests.post(
-        f"{GATEWAY_URL}/api/v1/local/message",
-        json={
-            "sessionId": session_id,
-            "userId": user_id,
-            "text": text
-        }
-    )
-    return response.json()
-
-# 使用示例
-result = send_message("session-001", "user-001", "你好")
-print(result)  # {"success": true}
-```
-
-### 6.2 方案二：WebSocket 实时通信 (推荐)
-
-```
-[IM 系统] ◀──WebSocket──▶ [Gateway] ──▶ [Clawdbot]
-          双向实时通信
-```
-
-**Python 代码示例**:
-```python
-import asyncio
-import websockets
-import json
-
-async def chat_with_gateway():
-    """通过 WebSocket 与 Gateway 通信"""
-    uri = "ws://localhost:8080/api/v1/local/ws?sessionId=session-001&userId=user-001"
+@app.post('/api/ai-response')
+def handle_ai_response():
+    data = request.json
     
-    async with websockets.connect(uri) as websocket:
-        # 发送消息
-        await websocket.send(json.dumps({
-            "text": "你好，请帮我写一段代码",
-            "type": "text"
-        }))
-        
-        # 接收响应
-        response = await websocket.recv()
-        intent = json.loads(response)
-        
-        print(f"AI 响应: {intent['content']['text']}")
+    # 获取路由信息
+    channel_id = data['routing'].get('channelId')
+    user_id = data['routing'].get('userId')
+    text = data['text']
+    
+    # 根据 channelId 发送到正确的频道
+    if channel_id:
+        slack_client.chat_postMessage(channel=channel_id, text=text)
+    else:
+        # 私信给用户
+        slack_client.chat_postMessage(channel=user_id, text=text)
+    
+    return jsonify({'ok': True})
 
-# 运行
-asyncio.run(chat_with_gateway())
+if __name__ == '__main__':
+    app.run(port=3000)
 ```
 
-**JavaScript 代码示例**:
+**Node.js Express 示例：**
+
 ```javascript
-// 浏览器或 Node.js
-const ws = new WebSocket('ws://localhost:8080/api/v1/local/ws?sessionId=session-001&userId=user-001');
+const express = require('express');
+const { WebClient } = require('@slack/web-api');
 
-ws.onopen = () => {
-    console.log('已连接到 Gateway');
-    
-    // 发送消息
-    ws.send(JSON.stringify({
-        text: '你好，请帮我写一段代码',
-        type: 'text'
-    }));
-};
+const app = express();
+const slack = new WebClient(process.env.SLACK_TOKEN);
 
-ws.onmessage = (event) => {
-    const intent = JSON.parse(event.data);
-    console.log('AI 响应:', intent.content.text);
-    
-    // 将响应展示给用户...
-};
+app.use(express.json());
 
-ws.onerror = (error) => {
-    console.error('连接错误:', error);
-};
-```
-
-### 6.3 方案三：自定义 IM 适配器 (高级)
-
-如果您的 IM 系统需要特殊处理（如微信、钉钉等），可以实现自定义适配器：
-
-```go
-// internal/adapter/myim/myim.go
-
-package myim
-
-import (
-    "context"
-    "github.com/zlc_ai/uip-gateway/internal/adapter"
-    "github.com/zlc_ai/uip-gateway/internal/protocol"
-)
-
-type MyIMAdapter struct {
-    // 您的 IM SDK 客户端
-}
-
-func (a *MyIMAdapter) Name() string {
-    return "myim"
-}
-
-func (a *MyIMAdapter) Start(ctx context.Context) error {
-    // 启动 IM 监听
-    return nil
-}
-
-func (a *MyIMAdapter) OnEvent(handler adapter.EventHandler) {
-    // 当收到 IM 消息时，转换为 CIE 并调用 handler
-}
-
-func (a *MyIMAdapter) SendIntent(ctx context.Context, intent *protocol.InteractionIntent) error {
-    // 将 AI 响应发送到 IM
-    return nil
-}
-
-func (a *MyIMAdapter) Capabilities() *protocol.SurfaceCapabilities {
-    return &protocol.SurfaceCapabilities{
-        SupportsReply:    true,
-        SupportsMarkdown: true,
-        // ...
-    }
-}
-```
-
----
-
-## 7. 调试检查清单
-
-### 7.1 Gateway 检查
-
-- [ ] Gateway 启动成功，监听 8080 端口
-- [ ] `curl http://localhost:8080/health` 返回 `{"status":"healthy"}`
-- [ ] 日志显示 "Using Moltbot universal-im client"
-- [ ] 日志显示 "Adapter registered" 和 "Gateway started"
-
-### 7.2 Moltbot 检查
-
-- [ ] Moltbot gateway 启动成功 (`pnpm openclaw gateway run`)
-- [ ] Moltbot 监听 18789 端口
-- [ ] `pnpm openclaw channels status` 显示 universal-im 已启用
-- [ ] `curl http://localhost:18789/universal-im/health` 返回 OK
-- [ ] endpoints 中有 "uip-gateway"
-
-### 7.3 连通性检查
-
-```bash
-# 1. 检查 Moltbot 健康
-curl http://localhost:18789/universal-im/health
-
-# 2. 直接测试 Moltbot webhook (应该返回 ok: true)
-curl -X POST http://localhost:18789/universal-im/webhook/uip-gateway \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer uip-gateway-token" \
-  -d '{"message_id":"test","text":"hello","from":{"id":"u1"},"chat":{"id":"c1","type":"private"}}'
-
-# 3. 检查 Gateway callback 端点
-curl -X POST http://localhost:8080/api/v1/callback \
-  -H "Content-Type: application/json" \
-  -d '{"chat_id":"test","text":"hello"}'
-```
-
-### 7.4 端到端检查
-
-- [ ] Gateway 日志显示 "Received message"
-- [ ] Gateway 日志显示 "Message sent to Moltbot"
-- [ ] Gateway 日志显示 "Received Moltbot callback"
-- [ ] Gateway 日志显示 "Event processed successfully"
-- [ ] WebSocket 客户端收到 Intent
-
-### 7.5 常见问题
-
-| 问题 | 可能原因 | 解决方案 |
-|------|----------|----------|
-| "Endpoint not found" | token 不匹配或端点未启用 | 检查 Moltbot config.json 中的 token 和 enabled |
-| "Invalid signature" | 签名验证失败 | 确保没有配置全局 secret，或者配置正确 |
-| 回调超时 | Moltbot 找不到 callback URL | 检查 callbackUrl 是否可访问 |
-| Gateway 连接失败 | Moltbot 未启动或端口错误 | 确认 Moltbot 在 18789 端口运行 |
-| WebSocket 收不到响应 | sessionId/chatId 不匹配 | 确保 chat.id 和 sessionId 一致 |
-
-### 7.6 日志调试
-
-```bash
-# Gateway 详细日志
-./bin/uip-gateway -config config.yaml 2>&1 | jq .
-
-# Moltbot 日志
-pnpm openclaw gateway run --verbose
-```
-
----
-
-## 8. 配置参考
-
-### 8.1 Gateway 完整配置 (config.yaml)
-
-```yaml
-server:
-  http_port: 8080
-  grpc_port: 9090
-  read_timeout: 30s
-  write_timeout: 30s
-  shutdown_timeout: 10s
-
-clawdbot:
-  # Moltbot gateway 地址 (默认端口 18789)
-  endpoint: "http://localhost:18789"
-  timeout: 30s
-  retry_policy:
-    max_retries: 3
-    backoff: "exponential"
-  insecure: true
+app.post('/api/ai-response', async (req, res) => {
+  const { text, routing } = req.body;
+  const { channelId, userId } = routing;
   
-  # Moltbot universal-im 集成配置
-  mode: "moltbot"                     # "moltbot" 或 "legacy"
-  token: "uip-gateway-token"          # 认证 token
-  endpoint_id: "uip-gateway"          # Moltbot 端点 ID
-  callback_url: "http://localhost:8080/api/v1/callback"
+  try {
+    // 发送到正确的频道或用户
+    await slack.chat.postMessage({
+      channel: channelId || userId,
+      text: text
+    });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Failed to send message:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
 
-adapters:
-  local:
-    enabled: true
-    http_path: "/api/v1/local"
-
-session:
-  ttl: 24h
-  max_sessions: 10000
-
-observability:
-  log_level: "info"
-  tracing: true
+app.listen(3000, () => console.log('IM server running on :3000'));
 ```
 
-### 8.2 Moltbot 配置 (~/.clawdbot/config.json)
+---
 
-```jsonc
+## 五、完整集成示例
+
+### 5.1 消息流程演示
+
+```
+1. 用户在 Slack #general 频道发送 "你好 早上好"
+      ↓
+2. 你的 Slack Bot 捕获消息，POST 到 Gateway:
+   POST http://localhost:8080/api/v1/local/message
+   {
+     "sessionId": "slack-conv-123",
+     "userId": "U12345",
+     "channelId": "C12345678",        ← Slack 频道 ID
+     "conversationType": "channel",
+     "text": "你好 早上好"
+   }
+      ↓
+3. Gateway 返回 {"success": true}
+      ↓
+4. Gateway 转发给 OpenClaw AI
+      ↓
+5. AI 生成回复，通过 outbound 返回
+      ↓
+6. Gateway 推送到你的 webhook (http://your-server:3000/api/ai-response):
+   {
+     "text": "你好！早上好！有什么我可以帮你的？",
+     "routing": {
+       "channelId": "C12345678",      ← 告诉你发到哪个频道
+       "userId": "U12345"
+     }
+   }
+      ↓
+7. 你的 Bot 根据 channelId="C12345678" 发送到 Slack #general 频道
+```
+
+### 5.2 测试命令
+
+```bash
+# 1. 启动 Gateway
+./bin/uip-gateway -config config.yaml
+
+# 2. 发送测试消息
+curl -X POST http://localhost:8080/api/v1/local/message \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sessionId": "my-session",
+    "userId": "user123",
+    "channelId": "slack-C12345678",
+    "conversationType": "channel",
+    "text": "你好 早上好"
+  }'
+
+# 3. 模拟 AI 响应（用于测试）
+curl -X POST http://localhost:8080/api/v1/openclaw/outbound \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "user:user123",
+    "text": "你好！这是 AI 的回复。"
+  }'
+```
+
+---
+
+## 六、关键概念说明
+
+### 6.1 `channelId` 的重要性
+
+`channelId` 是实现**消息路由**的关键字段：
+
+- **发送时**：告诉 Gateway 这条消息来自哪个频道/群聊
+- **接收时**：Gateway 在 `routing.channelId` 中返回，告诉你该把 AI 响应发到哪里
+
+### 6.2 `sessionId` vs `channelId` vs `userId`
+
+| 字段 | 用途 | 示例 |
+|------|------|------|
+| `sessionId` | 会话追踪，用于 AI 上下文管理 | `"conv-2024-001"` |
+| `channelId` | IM 平台的频道/群聊 ID，用于消息路由 | `"C12345678"` (Slack) |
+| `userId` | 消息发送者的用户 ID | `"U12345"` |
+
+### 6.3 多 Agent 场景
+
+对于多 Agent 协作场景，可以使用不同的 `channelId` 来区分不同的讨论频道：
+
+```bash
+# 发送到设计讨论频道
+curl -X POST http://localhost:8080/api/v1/local/message \
+  -d '{"sessionId":"design-session","userId":"alice","channelId":"design-channel","text":"讨论 UI 设计"}'
+
+# 发送到技术讨论频道
+curl -X POST http://localhost:8080/api/v1/local/message \
+  -d '{"sessionId":"tech-session","userId":"bob","channelId":"tech-channel","text":"讨论技术方案"}'
+```
+
+---
+
+## 七、错误处理
+
+### 7.1 Gateway 返回错误
+
+```json
 {
-  "channels": {
-    "universal-im": {
-      "enabled": true,
-      "endpoints": {
-        "uip-gateway": {
-          // 必须与 Gateway config.yaml 中的 token 一致
-          "token": "uip-gateway-token",
-          
-          // Gateway 的回调地址
-          "callbackUrl": "http://localhost:8080/api/v1/callback",
-          
-          // 可选配置
-          "name": "UIP Gateway",
-          "enabled": true,
-          "dmPolicy": "open",
-          
-          // 如果 Gateway 需要认证回调请求
-          "callbackAuth": {
-            "type": "bearer",
-            "token": "callback-auth-token"
-          }
-        }
-      }
-    }
+  "success": false,
+  "error": {
+    "code": "GATEWAY_ERROR",
+    "message": "OpenClaw connection failed"
   }
 }
 ```
 
-### 8.3 快速配置脚本
+### 7.2 Webhook 推送失败
 
-```bash
-#!/bin/bash
-# setup-moltbot-integration.sh
+Gateway 会自动重试（根据 `retry_count` 配置），如果仍然失败，会在日志中记录：
 
-# 设置 Moltbot universal-im 端点
-pnpm openclaw config set channels.universal-im.enabled true
-pnpm openclaw config set channels.universal-im.endpoints.uip-gateway.token "uip-gateway-token"
-pnpm openclaw config set channels.universal-im.endpoints.uip-gateway.callbackUrl "http://localhost:8080/api/v1/callback"
-pnpm openclaw config set channels.universal-im.endpoints.uip-gateway.enabled true
-pnpm openclaw config set channels.universal-im.endpoints.uip-gateway.dmPolicy "open"
-
-# 启用插件
-pnpm openclaw plugins enable universal-im
-
-# 重启 gateway
-pnpm openclaw gateway restart
-
-echo "Moltbot 配置完成！"
 ```
-
-### 8.4 环境变量覆盖
-
-```bash
-# Gateway 环境变量
-export CLAWDBOT_ENDPOINT="http://moltbot-host:18789"
-export CLAWDBOT_TOKEN="your-secret-token"
-export LOG_LEVEL="debug"
+{"level":"error","msg":"Failed to notify IM webhook","error":"connection refused"}
 ```
 
 ---
 
-## 9. 下一步
+## 八、API 端点汇总
 
-1. **启动 Gateway Mock 模式** - 验证基础设施
-2. **实现 Clawdbot /api/v1/chat 接口** - 按照 4.1 节规范
-3. **端到端测试** - 按照第 5 节步骤
-4. **接入您的 IM 系统** - 选择方案二 WebSocket 推荐
-5. **生产部署** - 使用 Docker/K8s
-
-如有问题，请检查 Gateway 日志 (`log_level: debug`) 和 Clawdbot 日志进行排查。
-
----
-
-## 10. 常见问题与解决方案 (Troubleshooting)
-
-### 10.1 Session 状态导致的响应为空
-
-**问题**: AI 运行完成但 `hasReply=false`，`counts={"tool":0,"block":0,"final":0}`
-
-**原因**: 同一个 session ID 如果之前出现过异常，可能导致后续消息处理失败。
-
-**解决方案**: 使用新的唯一 session ID 测试。在生产环境中，确保每个用户会话使用唯一的 session ID。
-
-```bash
-# 使用时间戳生成唯一 session ID
-curl -X POST http://localhost:8080/api/v1/local/message \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"sessionId\": \"session-$(date +%s)\",
-    \"userId\": \"user-$(date +%s)\",
-    \"text\": \"你好\"
-  }"
-```
-
-### 10.2 Moltbot Gateway 进程未更新代码
-
-**问题**: 修改了 Moltbot 插件代码后，新代码没有生效。
-
-**原因**: `moltbot-gateway` 是独立的二进制进程，需要重启才能加载新代码。
-
-**解决方案**:
-
-```bash
-# 1. 查找并杀死旧进程
-ps aux | grep moltbot-gateway
-kill -9 <PID>
-
-# 2. 重新启动
-cd /path/to/moltbot
-pnpm openclaw gateway
-```
-
-### 10.3 Webhook 端点 404 错误
-
-**问题**: 调用 `/universal-im/webhook` 返回 404 或 "Method Not Allowed"
-
-**原因**: Webhook 路径需要包含 `endpointId`。
-
-**正确格式**: `/universal-im/webhook/:endpointId`
-
-```bash
-# ❌ 错误
-curl -X POST http://localhost:18789/universal-im/webhook
-
-# ✅ 正确
-curl -X POST http://localhost:18789/universal-im/webhook/uip-gateway \
-  -H "Authorization: Bearer uip-gateway-token" \
-  -d '{"message_id": "test-001", "text": "你好", ...}'
-```
-
-### 10.4 回调未发送到 Gateway
-
-**问题**: Moltbot 日志显示 `Callback succeeded` 但 Gateway 没有收到
-
-**检查步骤**:
-
-1. 验证 `callbackUrl` 配置正确:
-```bash
-cat ~/.clawdbot/moltbot.json | grep callbackUrl
-# 应该是: "http://localhost:8080/api/v1/callback"
-```
-
-2. 测试 Gateway 回调端点是否可达:
-```bash
-curl -X POST http://localhost:8080/api/v1/callback \
-  -H "Content-Type: application/json" \
-  -d '{"chat_id": "test", "text": "Hello"}'
-# 应该返回: {"ok": true}
-```
-
-3. 确保 Gateway 正在运行:
-```bash
-ps aux | grep uip-gateway
-```
-
-### 10.5 "context deadline exceeded" 超时错误
-
-**问题**: Gateway 日志显示 30 秒后超时
-
-**原因**: Gateway 等待 Moltbot 回调，但 Moltbot 没有发送或发送失败。
-
-**排查步骤**:
-
-1. 检查 Moltbot 日志是否有错误:
-```bash
-tail -50 /tmp/moltbot/moltbot-*.log | grep -E "error|fail|callback"
-```
-
-2. 确认 AI 是否正常响应:
-```bash
-# 使用 CLI 直接测试 AI
-pnpm openclaw agent --local -m "你好" --session-id test
-```
-
-3. 如果 AI 响应正常但没有回调，检查 `universal-im` 插件配置。
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/v1/local/message` | POST | 接收外部 IM 消息 |
+| `/api/v1/local/ws` | WebSocket | WebSocket 连接（实时通信） |
+| `/api/v1/openclaw/outbound` | POST | 接收 OpenClaw AI 响应 |
+| `/health` | GET | 健康检查 |
+| `/api/v1/info` | GET | 获取 Gateway 信息 |
 
 ---
 
-## 附录 A：项目文件清单
+## 九、相关文档
 
-```
-uip-gateway/
-├── cmd/gateway/main.go           # 主程序入口
-├── internal/
-│   ├── protocol/uip.go           # UIP 协议定义
-│   ├── adapter/
-│   │   ├── adapter.go            # 适配器接口
-│   │   └── local/local.go        # 本地 HTTP/WS 适配器
-│   ├── clawdbot/client.go        # Clawdbot HTTP 客户端
-│   ├── gateway/gateway.go        # 网关核心逻辑
-│   └── config/config.go          # 配置加载
-├── config.yaml                   # 默认配置
-├── Makefile                      # 构建脚本
-└── README.md                     # 使用文档
-```
-
----
-
-## 附录 B：验证成功的完整日志示例
-
-以下是一次成功的端到端通信日志：
-
-```
-# 1. Gateway 收到用户消息
-{"level":"info","msg":"Processing event","interactionId":"xxx","sessionId":"demo-session"}
-
-# 2. Moltbot 收到 webhook
-[universal-im] Received message from uip-gateway
-[universal-im] Starting dispatch for session: universal-im:uip-gateway:demo-user
-[universal-im] Context: Body="你好", From=demo-user, ChatType=direct
-
-# 3. AI 处理并生成响应
-embedded run start: provider=qwen-portal model=coder-model
-embedded run done: durationMs=5000 aborted=false
-
-# 4. Moltbot 发送回调
-[universal-im] deliver called: kind=final, text=我是你的AI助手...
-[universal-im] Reply dispatch completed: hasReply=true, queuedFinal=true
-[universal-im] Sending callback
-[universal-im] Callback succeeded
-
-# 5. Gateway 收到回调
-{"level":"info","msg":"Received Moltbot callback","chatId":"demo-user","text":"我是你的AI助手..."}
-```
+- [Universal IM 插件开发指南](./Universal_IM_Plugin_Development_Guide.md)
+- [Universal IM Transport 注册](./Universal_IM_Transport_Registration.md)
+- [Universal IM CLI 集成指南](./Universal_IM_CLI_Integration_Guide.md)

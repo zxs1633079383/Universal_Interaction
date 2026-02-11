@@ -21,6 +21,7 @@ import (
 	"github.com/zlc_ai/uip-gateway/internal/clawdbot"
 	"github.com/zlc_ai/uip-gateway/internal/config"
 	"github.com/zlc_ai/uip-gateway/internal/gateway"
+	"github.com/zlc_ai/uip-gateway/internal/imwebhook"
 	"github.com/zlc_ai/uip-gateway/internal/transport"
 )
 
@@ -121,6 +122,32 @@ func main() {
 
 	if err := gw.Start(ctx); err != nil {
 		logger.Fatal("Failed to start gateway", zap.Error(err))
+	}
+
+	// Initialize IM webhook notifier if enabled
+	var imNotifier *imwebhook.Notifier
+	if cfg.IMWebhook.Enabled && cfg.IMWebhook.URL != "" {
+		imNotifier = imwebhook.NewNotifier(imwebhook.Config{
+			URL:        cfg.IMWebhook.URL,
+			AuthHeader: cfg.IMWebhook.AuthHeader,
+			Timeout:    cfg.IMWebhook.Timeout,
+			RetryCount: cfg.IMWebhook.RetryCount,
+		}, logger)
+		logger.Info("IM webhook notifier enabled",
+			zap.String("url", cfg.IMWebhook.URL))
+
+		// Set callback on OpenClaw client to forward AI responses to external IM
+		if openclawClient != nil {
+			openclawClient.SetOutboundCallback(func(response *clawdbot.OutboundResponse) {
+				go func() {
+					if err := imNotifier.Notify(ctx, response); err != nil {
+						logger.Error("Failed to notify IM webhook",
+							zap.Error(err),
+							zap.String("channelId", response.ChannelID))
+					}
+				}()
+			})
+		}
 	}
 
 	// Create HTTP server
